@@ -1,0 +1,6 @@
+app:
+  name: __PROJECT_NAME__
+  description: "SPA micro shell (Vue SPA bundle, browser hits services directly via CORS)"
+  port: 0
+  address: 127.0.0.1
+

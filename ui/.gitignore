@@ -1,0 +1,6 @@
+zig-pkg
+cart
+.DS_Store
+zig-out
+.zig-cache
+node_modules

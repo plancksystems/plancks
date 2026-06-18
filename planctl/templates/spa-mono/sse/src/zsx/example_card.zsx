@@ -1,0 +1,20 @@
+const std = @import("std");
+const Item = @import("../models/item.zig").Item;
+
+pub const ExampleCard = struct {
+    item: Item,
+
+    pub fn render(self: ExampleCard, out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+        return (
+            <div id="example-item-${self.item.ItemID}"
+                 class='rounded-xl border-2 ${self.item.statusColor()} p-4 bg-white shadow-sm'>
+                <h3 class="text-sm font-semibold text-slate-800">
+                    {self.item.Name}
+                </h3>
+                <p class="text-xs text-slate-500 mt-1">
+                    Status: {self.item.Status}
+                </p>
+            </div>
+        );
+    }
+};

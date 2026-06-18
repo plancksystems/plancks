@@ -1,0 +1,222 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  ZIG_VERSION: "0.16.0"
+  NODE_VERSION: "20"
+
+permissions:
+  contents: write
+
+jobs:
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build UI
+        working-directory: ui
+        run: |
+          rm -f package-lock.json
+          rm -rf node_modules
+          npm install --no-audit --no-fund
+          npm install --no-save --no-audit --no-fund @rollup/rollup-linux-x64-gnu
+          npm run build
+          test -f ../workbench/src/ui/dist/index.html
+          test -f ../workbench/src/ui/dist/index.js
+          test -f ../workbench/src/ui/dist/index.css
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: workbench/src/ui/dist/
+          retention-days: 1
+
+  build:
+    needs: ui
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_arch: linux-amd64
+            runs-on: ubuntu-latest
+            wasmer_platform: x86_64-linux
+            wasmer_lib: libwasmer.so
+            zig_target: x86_64-linux-gnu
+            ext: ""
+            archive_ext: tar.gz
+          - os_arch: linux-arm64
+            runs-on: ubuntu-24.04-arm
+            wasmer_platform: aarch64-linux
+            wasmer_lib: libwasmer.so
+            zig_target: aarch64-linux-gnu
+            ext: ""
+            archive_ext: tar.gz
+          - os_arch: macos-arm64
+            runs-on: macos-latest
+            wasmer_platform: aarch64-macos
+            wasmer_lib: libwasmer.dylib
+            zig_target: aarch64-macos
+            ext: ""
+            archive_ext: tar.gz
+          - os_arch: windows-amd64
+            runs-on: windows-latest
+            wasmer_platform: x86_64-windows
+            wasmer_lib: wasmer.dll
+            zig_target: x86_64-windows-gnu
+            ext: ".exe"
+            archive_ext: zip
+
+    runs-on: ${{ matrix.runs-on }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: workbench/src/ui/dist/
+
+      - name: Install Zig (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)   ZIG_ARCH="x86_64-linux" ;;
+            Linux-aarch64)  ZIG_ARCH="aarch64-linux" ;;
+            Darwin-arm64)   ZIG_ARCH="aarch64-macos" ;;
+            Darwin-x86_64)  ZIG_ARCH="x86_64-macos" ;;
+          esac
+          curl -sL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" | tar xJ
+          echo "$(pwd)/zig-${ZIG_ARCH}-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Install Zig (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://ziglang.org/download/${env:ZIG_VERSION}/zig-x86_64-windows-${env:ZIG_VERSION}.zip"
+          Invoke-WebRequest -Uri $url -OutFile zig.zip
+          Expand-Archive zig.zip -DestinationPath .
+          "$(Get-Location)\zig-x86_64-windows-${env:ZIG_VERSION}" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Verify Zig
+        run: zig version
+
+      - name: Set WASMER_DIR
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            wasmer="$GITHUB_WORKSPACE/planck/vendor/wasmer/${{ matrix.wasmer_platform }}"
+          else
+            wasmer="$GITHUB_WORKSPACE/planck/vendor/wasmer/${{ matrix.wasmer_platform }}"
+          fi
+          if [ ! -d "$wasmer/lib" ]; then
+            echo "Error: $wasmer/lib not found in repo"
+            exit 1
+          fi
+          echo "WASMER_DIR=$wasmer" >> "$GITHUB_ENV"
+          echo "Using committed wasmer at $wasmer"
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            export SDKROOT="$(xcrun --show-sdk-path)"
+          fi
+          for dir in planck workbench planctl; do
+            echo "── Building $dir for ${{ matrix.zig_target }} ──"
+            (cd "$dir" && zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }})
+          done
+
+      - name: Stage release archive
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          base="planck-${version}-${{ matrix.os_arch }}"
+          stage="stage/${base}"
+          ext="${{ matrix.ext }}"
+          wasmer_lib="${{ matrix.wasmer_lib }}"
+
+          mkdir -p "${stage}/bin"
+
+          cp "planck/zig-out/bin/planck${ext}"        "${stage}/bin/"
+          cp "workbench/zig-out/bin/workbench${ext}"  "${stage}/bin/"
+          cp "planctl/zig-out/bin/planctl${ext}"      "${stage}/bin/"
+          cp "planck/vendor/wasmer/${{ matrix.wasmer_platform }}/lib/${wasmer_lib}" "${stage}/bin/"
+
+          printf '%s' "$version" > "${stage}/VERSION"
+          cat > "${stage}/README.md" <<EOF
+
+          Contents:
+            bin/planck       Database engine
+            bin/workbench       Control plane + web UI (port 2369)
+            bin/planctl             Deploy CLI
+            bin/${wasmer_lib}   Wasmer runtime (loaded dynamically)
+
+          Install:
+            curl -sSL https://planck.io/downloads/get.sh | sudo sh
+          EOF
+
+          mkdir -p artifacts
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+            archive="${base}.zip"
+            (cd stage && 7z a -tzip "../artifacts/${archive}" "${base}" >/dev/null)
+          else
+            archive="${base}.tar.gz"
+            tar -C stage -czf "artifacts/${archive}" "${base}"
+          fi
+
+          cd artifacts
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${archive}" > "${archive}.sha256"
+          else
+            shasum -a 256 "${archive}" > "${archive}.sha256"
+          fi
+          ls -lh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os_arch }}
+          path: artifacts/
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: build-*
+          merge-multiple: true
+
+      - name: Build aggregate SHA256SUMS
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cd artifacts
+          ls -lh
+          : > "SHA256SUMS-${version}.txt"
+          for sha in *.sha256; do
+            cat "$sha" >> "SHA256SUMS-${version}.txt"
+          done
+          cat "SHA256SUMS-${version}.txt"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Planck ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*

@@ -1,0 +1,101 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const deps = wireDeps(b, target, optimize);
+
+    const fragments_clean = b.addSystemCommand(&.{ "planctl", "clean", "src/fragments/" });
+    const fragments_preprocess = b.addSystemCommand(&.{ "planctl", "src/zsx/", "src/fragments/" });
+    fragments_preprocess.step.dependOn(&fragments_clean.step);
+
+    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+    const wasm = b.addExecutable(.{
+        .name = "tasks",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/app.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "web", .module = deps.web },
+                .{ .name = "planck", .module = deps.planck_zig_client },
+            },
+        }),
+    });
+    wasm.entry = .disabled;
+    wasm.rdynamic = true;
+    wasm.step.dependOn(&fragments_preprocess.step);
+    const wasm_install = b.addInstallArtifact(wasm, .{
+        .dest_dir = .{ .override = .{ .custom = "wasm" } },
+    });
+
+    const dev_exe = b.addExecutable(.{
+        .name = "tasks-dev",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/dev.zig"),
+            .target = target,
+            .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "web", .module = deps.web },
+                .{ .name = "schnell", .module = deps.schnell },
+                .{ .name = "planck", .module = deps.planck_zig_client },
+            },
+        }),
+    });
+    dev_exe.step.dependOn(&fragments_preprocess.step);
+    const dev_install = b.addInstallArtifact(dev_exe, .{});
+    const run_dev = b.addRunArtifact(dev_exe);
+    run_dev.step.dependOn(&dev_install.step);
+
+    b.step("wasm", "Build WASM module").dependOn(&wasm_install.step);
+    b.step("dev", "Run dev server").dependOn(&run_dev.step);
+    b.step("dev-build", "Build dev binary").dependOn(&dev_install.step);
+    b.default_step = &wasm_install.step;
+}
+
+const Deps = struct {
+    bson: *std.Build.Module,
+    utils: *std.Build.Module,
+    tls: *std.Build.Module,
+    proto: *std.Build.Module,
+    planck_zig_client: *std.Build.Module,
+    schnell: *std.Build.Module,
+    web: *std.Build.Module,
+};
+
+fn wireDeps(b: *std.Build, target: anytype, optimize: anytype) Deps {
+    const bson_dep = b.dependency("bson", .{});
+    const bson = b.createModule(.{ .root_source_file = bson_dep.path("src/root.zig"), .target = target, .optimize = optimize });
+
+    const utils_dep = b.dependency("utils", .{});
+    const utils = b.createModule(.{ .root_source_file = utils_dep.path("src/root.zig"), .target = target, .optimize = optimize });
+
+    const tls_dep = b.dependency("tls", .{});
+    const tls = b.createModule(.{ .root_source_file = tls_dep.path("src/root.zig"), .target = target, .optimize = optimize });
+
+    const proto_dep = b.dependency("proto", .{});
+    const proto = b.createModule(.{ .root_source_file = proto_dep.path("src/root.zig"), .target = target, .optimize = optimize });
+    proto.addImport("utils", utils);
+
+    const planck_dep = b.dependency("planck_zig_client", .{});
+    const planck_zig_client = b.createModule(.{ .root_source_file = planck_dep.path("src/root.zig"), .target = target, .optimize = optimize });
+    planck_zig_client.addImport("tls", tls);
+    planck_zig_client.addImport("bson", bson);
+    planck_zig_client.addImport("utils", utils);
+    planck_zig_client.addImport("proto", proto);
+
+    const schnell_dep = b.dependency("schnell", .{});
+    const schnell = b.createModule(.{ .root_source_file = schnell_dep.path("src/root.zig"), .target = target, .optimize = optimize });
+    schnell.addImport("bson", bson);
+    schnell.addImport("utils", utils);
+    schnell.addImport("tls", tls);
+    schnell.addImport("proto", proto);
+    schnell.addImport("planck_zig_client", planck_zig_client);
+
+    const web = b.createModule(.{ .root_source_file = schnell_dep.path("src/web/root.zig"), .target = target, .optimize = optimize });
+    web.addImport("bson", bson);
+    web.addImport("schnell", schnell);
+
+    return .{ .bson = bson, .utils = utils, .tls = tls, .proto = proto, .planck_zig_client = planck_zig_client, .schnell = schnell, .web = web };
+}

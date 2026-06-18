@@ -1,0 +1,16 @@
+
+app: __PROJECT_NAME__
+
+http:
+  host: "127.0.0.1"
+  port: 0
+
+ssehub:
+  heartbeat_interval_ms: 15000
+
+  retry_ms: 3000
+
+  subscriber_queue_size: 256
+
+logging:
+  level: info
