@@ -159,7 +159,7 @@ buffers:
 
 durability:
   enabled: true
-  flush_interval_in_ms: 1000 # background WAL flush cadence
+  flush_interval_in_ms: 1000 # WAL flush
   log_archive:
     enabled: false
     dest_path: ""
@@ -180,7 +180,7 @@ cache:
   capacity: 10000
 
 logging:
-  path: "" # empty -> stderr
+  path: ""
   level: info # debug | info | warn | err
   max_size_mb: 10
   max_files: 5
