@@ -44,7 +44,7 @@ Linux is the production target, install under `/opt/planck`:
 
 ```sh
 sudo mkdir -p /opt/planck
-sudo tar -xzf ~/Downloads/planck-0.1.0-linux-amd6.tar.gz -C /opt/planck --strip-components=1
+sudo tar -xzf ~/Downloads/planck-0.1.0-linux-amd64.tar.gz -C /opt/planck --strip-components=1
 ```
 
 Add the bin directory to your shell rc (`~/.bashrc`):
