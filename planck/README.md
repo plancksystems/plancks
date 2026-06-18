@@ -19,12 +19,12 @@ Embedded-feel database, network-shaped server. Single Zig binary
 planck is one binary built around a single storage engine, with two
 ways in that are _not_ symmetric:
 
-- **TCP wire protocol** (default port 24010): how clients talk to the
+- **TCP wire protocol** (port range to use 24000): how clients talk to the
   database directly. `planck-zig-client`, `planctl`, and `workbench`
   connect here; a connection enters through a TLS 1.3 session pool and
   passes authentication (RBAC, sessions, throttling) before reaching
   the engine.
-- **HTTP** (default port 3010, TLS 1.3): _not_ a database wire
+- **HTTP** (port range to use 3000, TLS 1.3): _not_ a database wire
   protocol. It exposes the **WASM app hosted inside planck** over HTTP:
   a browser or HTTP client hits the app, the request runs in the
   in-process WASM runtime (a pooled wasmer instance per request), and
@@ -35,8 +35,7 @@ your app, and the app queries the database in-process.
 
 ![planck architecture](arch.png)
 
-_Component map of the process (source: [`arch.drawio`](arch.drawio),
-editable in draw.io / diagrams.net)._ The two data paths through the
+Component map of the process. The two data paths through the
 engine, in detail:
 
 **Write path** (`insert` / `update` / `delete` / batch):
@@ -90,7 +89,7 @@ copies live entries to a new segment and unlinks the old one. The GC happens in 
 
 Persistent B+ tree mapping `u128` primary key to a vlog pointer
 `(segment_id, offset)`. Disk-resident; in-memory page cache governed
-by `cache.capacity`.
+by `index.primary.pool_size`.
 
 Primary keys are 128-bit so a store can carry both an integer id (for
 small datasets) and a hash-derived key (when you want UUIDs without
@@ -120,7 +119,7 @@ host. Replication uses it as a cursor; the checkpoint header tracks
 
 WAL segments cap at `file_sizes.wal` (default 16 MiB) and rotate.
 `log_archive.enabled` ships rotated segments to a directory you
-specify, which is what backup tooling consumes.
+specify.
 
 ## Configuration
 
@@ -130,8 +129,6 @@ Two files, both YAML:
   change streams. Read by the DB itself.
 - `service.yaml`: identity, WASM hosting, outbound upstream
   allowlist. Read by the WASM runtime.
-
-Both files are optional; missing files mean safe defaults.
 
 ### db.yaml
 
@@ -151,7 +148,7 @@ session:
 
 buffers:
   memtable: 16777216 # 16 MiB before flush
-  vlog: 4194304 # 4 MiB write buffer for vlog appends
+  vlog: 4194304 # 4 MiB write buffer for vlog
   wal: 262144 # 256 KiB WAL write buffer
 
 durability:
@@ -173,7 +170,7 @@ index:
     pool_size: 64
 
 cache:
-  enabled: false # vlog page cache
+  enabled: false
   capacity: 10000
 
 logging:
