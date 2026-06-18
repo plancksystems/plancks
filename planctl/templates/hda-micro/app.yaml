@@ -1,0 +1,6 @@
+app:
+  name: __PROJECT_NAME__
+  description: "Hypermedia-driven micro shell (datastar, browser hits services directly via CORS)"
+  port: 0
+  address: 127.0.0.1
+

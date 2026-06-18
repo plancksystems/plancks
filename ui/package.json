@@ -1,0 +1,24 @@
+{
+  "name": "wb",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && shx cp -R dist/index.html dist/index.js dist/index.css ../workbench/src/ui/dist/",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "chart.js": "^4.5.1",
+    "lucide-vue-next": "^0.577.0",
+    "vue": "^3.5.25",
+    "vue-chartjs": "^5.3.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "@vitejs/plugin-vue": "^6.0.2",
+    "shx": "^0.4.0",
+    "tailwindcss": "^4.2.1",
+    "vite": "^7.3.1"
+  }
+}

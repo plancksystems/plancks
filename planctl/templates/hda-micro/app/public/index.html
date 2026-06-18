@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HDA Micro Starter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module"
+      src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.1/bundles/datastar.js"></script>
+  </head>
+  <body class="bg-slate-50 text-slate-800 min-h-screen">
+    <nav class="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between sticky top-0 z-50 shadow-sm">
+      <span class="text-lg font-bold text-blue-700">⚡ HDA Micro</span>
+      <a href="/tasks" class="text-sm text-blue-600 hover:underline">Tasks</a>
+    </nav>
+
+    <main id="content"
+          class="max-w-3xl mx-auto p-6"
+          data-init="@get('/tasks')">
+      <p class="text-slate-400 text-sm text-center py-12">Loading…</p>
+    </main>
+  </body>
+</html>

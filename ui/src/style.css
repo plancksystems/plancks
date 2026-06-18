@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.light-scroll::-webkit-scrollbar-track {
+  background: #f8fafc;
+}
+.light-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+.results-table > table > thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.sub-table-wrap {
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  margin: 2px 0;
+}
+.sub-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}

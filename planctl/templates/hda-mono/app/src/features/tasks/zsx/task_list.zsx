@@ -1,0 +1,48 @@
+const std = @import("std");
+const Task = @import("../models/task.zig").Task;
+
+pub const TaskList = struct {
+    tasks: []const Task,
+
+    pub fn render(self: TaskList, out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+        return (
+            <div id="content" class="space-y-4">
+                <header class="flex items-center justify-between">
+                    <h1 class="text-2xl font-bold text-slate-800">Tasks</h1>
+                    <span class="text-xs text-slate-500">{self.tasks.len} total</span>
+                </header>
+
+                <form data-on:submit__prevent="@post('/tasks', {contentType: 'json', payload: {Title: $newTitle}})"
+                      class="flex gap-2"
+                      data-signals="{newTitle: ''}">
+                    <input data-bind="newTitle"
+                           placeholder="What needs doing?"
+                           class="flex-1 px-3 py-2 rounded-md border border-slate-200 text-sm" />
+                    <button class="px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium">
+                        Add
+                    </button>
+                </form>
+
+                {if self.tasks.len == 0}
+                    <p class="text-slate-400 text-sm text-center py-12">No tasks yet — add one above.</p>
+                {else}
+                    <ul class="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 shadow-sm">
+                        {for t in self.tasks}
+                            <li class="px-4 py-3 flex items-center gap-3">
+                                <button data-on:click="@put('/tasks/${t.TaskID}', {contentType: 'json', payload: {Done: ${t.toggleTo()}}})"
+                                        class='w-5 h-5 rounded border-2 flex items-center justify-center ${t.boxClass()}'>
+                                    {t.checkMark()}
+                                </button>
+                                <span class='flex-1 text-sm ${t.titleClass()}'>
+                                    {t.Title}
+                                </span>
+                                <button data-on:click="@delete('/tasks/${t.TaskID}')"
+                                        class="text-slate-300 hover:text-red-500">🗑</button>
+                            </li>
+                        {/for}
+                    </ul>
+                {/if}
+            </div>
+        );
+    }
+};

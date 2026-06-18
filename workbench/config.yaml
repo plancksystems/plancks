@@ -1,0 +1,17 @@
+role: "standalone"
+node: "same"
+mode: "dev"
+planck_dir: "/Users/kamlesh/.planck"
+data_dir: "/Users/kamlesh/.planck/standalone"
+planck_bin: "/Users/kamlesh/.planck/bin/planck"
+listen_port: 2369
+
+logging:
+  path: "/Users/kamlesh/.planck/standalone/logs/workbench.log"
+  level: info
+  max_size_mb: 10
+  max_files: 5
+
+system_db:
+  host: "127.0.0.1"
+  port: 23469

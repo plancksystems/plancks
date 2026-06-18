@@ -1,0 +1,11 @@
+.{
+    .name = .planck_release,
+    .version = "0.0.0",
+    .fingerprint = 0x7503a97d3746a0f7,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

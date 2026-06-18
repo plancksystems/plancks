@@ -1,0 +1,52 @@
+address: "0.0.0.0"
+primary: true
+max_sessions: 128
+port: 0
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+session:
+  idle_timeout_ms: 604800000
+buffers:
+  memtable: 16777216
+  vlog: 4194304
+  wal: 262144
+durability:
+  enabled: true
+  flush_interval_in_ms: 1000
+  log_archive:
+    enabled: false
+    dest_path: ""
+    retain_logs_days: 15
+file_sizes:
+  vlog: 1073741824
+  wal: 16777216
+index:
+  primary:
+    pool_size: 64
+  secondary:
+    pool_size: 64
+cache:
+  enabled: false
+  capacity: 10000
+logging:
+  level: info
+  max_size_mb: 10
+  max_files: 5
+gc:
+  dead_ratio: 30
+limits:
+  max_batch_size: 10000
+  max_message_size: 16777216
+security:
+  max_failed_attempts: 5
+  lockout_duration_ms: 900000
+  lockout_multiplier: 2
+replica:
+  enabled: false
+  sync_interval_ms: 5000
+
+change_streams:
+  stores: []
+  ring_capacity: 16384

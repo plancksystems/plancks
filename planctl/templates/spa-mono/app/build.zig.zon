@@ -1,0 +1,32 @@
+.{
+    .name = .__PROJECT_NAME__,
+    .version = "0.1.0",
+    .fingerprint = 0xc96e70cff490eee6,
+    .dependencies = .{
+        .planck_zig_client = .{
+            .url = "https://github.com/plancksystems/planck-zig-client/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "planck_zig_client-0.1.0-Xx6aRF4NAwD0LxqttrPfA7n12b3rcJSpoTNjUqc7W6p3",
+        },
+        .bson = .{
+            .url = "https://github.com/plancksystems/bson/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "bson-0.1.0-QwoLYTgnAQDsLddxzgzYFH-7KkyYvIpSVg6a-vmLET6r",
+        },
+        .tls = .{
+            .url = "https://github.com/plancksystems/tls/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "tls-0.1.0-ER2e0qiABQDkemnrOqFJByiBoc-QJX2byyjAQWIzNExU",
+        },
+        .proto = .{
+            .url = "https://github.com/plancksystems/proto/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "proto-0.1.0-nDgOj9GAAQB8SXMiwjtHh9FG1SZCbrat-NI8x4_aGPH_",
+        },
+        .utils = .{
+            .url = "https://github.com/plancksystems/utils/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "utils-0.1.0-Ldej_uoMAgDQwHU3AW65leDiU91ICJlDBmzvjobZhGWr",
+        },
+        .schnell = .{
+            .url = "https://github.com/plancksystems/schnell-zig/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "schnell-0.1.0-mz-7QMe2BQB4lXCb45htDcUQNUGJvmVvA_7crUomTkiA",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
