@@ -70,12 +70,11 @@ Below the top layer, both paths share the same engine:
 ### Memtable
 
 In-memory sorted structure per store. Writes go here first; once it
-hits `buffers.memtable` bytes, a background `flush_task` ships its
-contents to the vlog and a fresh primary index entry per key.
+hits `buffers.memtable` bytes, flush ships its
+contents to the vlog and a fresh primary index entry per key and also in entries to secondary indexes.
 
 The memtable holds the most recent version of each key, so reads see
-new data before the flush completes. Concurrent flush + read is
-handled by frozen-memtable snapshots.
+new data before the flush completes.
 
 ### Value log (vlog)
 
@@ -85,9 +84,7 @@ are opened when the active one fills.
 
 Old segments accumulate dead bytes as updates / deletes invalidate
 their entries. `gc.dead_ratio` triggers a background GC pass that
-copies live entries to a new segment and unlinks the old one. The pass
-holds no read locks; readers continue against the old segment until GC
-finishes.
+copies live entries to a new segment and unlinks the old one. The GC happens in offline mode where read/writes are not allowed.
 
 ### Primary index (B+ tree)
 
