@@ -6,10 +6,7 @@ your application logic runs inside the database, right next to the data.
 The idea is to get rid of the usual split between the database and a
 separate service layer. Instead of running an API tier that shuttles
 data back and forth over the network, you deploy your app as a WASM
-module and the engine runs it where the data already lives. On an
-equivalent CRUD workload I measured this at around 4.5x faster than a
-Node/Express/MongoDB stack. You can reproduce the benchmark with
-[perf-compare](https://github.com/plancksystems/perf-compare).
+module and the engine runs it where the data already lives.
 
 Everything is written in Zig: the storage layer, the wire protocol,
 WASM hosting, replication, the control plane, the CLI, an application
