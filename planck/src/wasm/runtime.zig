@@ -14,6 +14,14 @@ const UpstreamPool = upstream_pool_mod.UpstreamPool;
 const WasmPathMetrics = @import("metrics.zig").WasmPathMetrics;
 const StopWatch = @import("utils").StopWatch;
 
+
+pub const WASM_FUEL_PER_CALL: u64 = 2_000_000_000;
+
+fn meteringCost(operator: c_int) callconv(std.builtin.CallingConvention.c) u64 {
+    _ = operator;
+    return 1;
+}
+
 pub const WasmRuntime = struct {
     allocator: Allocator,
     wasm_engine: *wasmer.Engine,
@@ -38,7 +46,10 @@ pub const WasmRuntime = struct {
 
         if (wasm_bytes.len < 1024) return error.WasmModuleTooSmall;
 
-        const wasm_engine = try wasmer.Engine.init();
+        const wasm_config = try wasmer.Config.init();
+        const metering = try wasmer.Metering.init(WASM_FUEL_PER_CALL, meteringCost);
+        wasm_config.pushMiddleware(try metering.asMiddleware());
+        const wasm_engine = try wasmer.Engine.withConfig(wasm_config);
         errdefer wasm_engine.deinit();
 
         const store = try wasmer.Store.init(wasm_engine);

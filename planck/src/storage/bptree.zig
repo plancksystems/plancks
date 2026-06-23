@@ -408,6 +408,10 @@ pub const Pager = struct {
         _ = try self.file.readPositionalAll(self.io, buf, page_id * PAGE_SIZE);
     }
 
+    pub fn sync(self: *Pager) !void {
+        try self.file.sync(self.io);
+    }
+
     pub fn persistFreeList(self: *Pager, scratch: []u8) !PageId {
         std.debug.assert(scratch.len >= PAGE_SIZE);
         var head: PageId = 0;
@@ -1411,6 +1415,8 @@ pub fn Index(comptime K: type, comptime V: type) type {
             defer self.engine_metrics.index.stop(self.io, &sw, .Flush);
             try self.tree.shutdown();
             try self.tree.pool.flushAllPages();
+            try self.tree.pool.pager.sync();
+            
         }
 
         fn KeyBuf(comptime KK: type) type {

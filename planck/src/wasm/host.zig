@@ -62,11 +62,16 @@ inline fn ctxFromEnv(env: ?*anyopaque) ?*HostContext {
     return @ptrCast(@alignCast(raw));
 }
 
+fn memSlice(mem: *wasmer.Memory, ptr: usize, len: usize) ?[]u8 {
+    const size = mem.size();
+    if (ptr > size or len > size - ptr) return null;
+    return mem.data()[ptr..][0..len];
+}
+
 fn hostRequestCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*wasm.ValVec) callconv(c_callconv) ?*wasm.Trap {
     const log = std.log.scoped(.wasm);
     const ctx = ctxFromEnv(env) orelse return null;
     const mem = ctx.memory orelse return null;
-    const mem_data = mem.data();
 
     const a = args orelse return null;
     const query_ptr: usize = @intCast(@as(u32, @bitCast(a.data[0].of.i32)));
@@ -74,7 +79,10 @@ fn hostRequestCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*w
     const dest_ptr: usize = @intCast(@as(u32, @bitCast(a.data[2].of.i32)));
     const dest_cap: usize = @intCast(@as(u32, @bitCast(a.data[3].of.i32)));
 
-    const query_bytes = mem_data[query_ptr .. query_ptr + query_len];
+    const query_bytes = memSlice(mem, query_ptr, query_len) orelse {
+        setResult(results, -1);
+        return null;
+    };
 
     var sw_total: StopWatch = .{};
     sw_total.start(ctx.io);
@@ -137,12 +145,18 @@ fn hostRequestCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*w
         return null;
     }
 
+    const dest = memSlice(mem, dest_ptr, total_size) orelse {
+        log.err("host_request: reply dest out of bounds ptr={d} len={d}", .{ dest_ptr, total_size });
+        setResult(results, -4);
+        return null;
+    };
+
     var sw_rep: StopWatch = .{};
     sw_rep.start(ctx.io);
-    mem_data[dest_ptr] = @intFromEnum(reply.status);
-    std.mem.writeInt(u32, mem_data[dest_ptr + 1 ..][0..4], @intCast(data.len), .little);
+    dest[0] = @intFromEnum(reply.status);
+    std.mem.writeInt(u32, dest[1..][0..4], @intCast(data.len), .little);
     if (data.len > 0) {
-        @memcpy(mem_data[dest_ptr + header_size .. dest_ptr + header_size + data.len], data);
+        @memcpy(dest[header_size .. header_size + data.len], data);
     }
     sw_rep.stop(ctx.io);
     if (ctx.metrics) |m| _ = m.dispatch_reply_write_ns.fetchAdd(sw_rep.elapsedNs(), .monotonic);
@@ -155,14 +169,14 @@ fn hostRespondCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*w
     _ = results;
     const ctx = ctxFromEnv(env) orelse return null;
     const mem = ctx.memory orelse return null;
-    const mem_data = mem.data();
 
     const a = args orelse return null;
     const ptr: usize = @intCast(@as(u32, @bitCast(a.data[0].of.i32)));
     const len: usize = @intCast(@as(u32, @bitCast(a.data[1].of.i32)));
 
     ctx.response_buf.clearRetainingCapacity();
-    ctx.response_buf.appendSlice(ctx.allocator, mem_data[ptr .. ptr + len]) catch {};
+    const src = memSlice(mem, ptr, len) orelse return null;
+    ctx.response_buf.appendSlice(ctx.allocator, src) catch {};
     return null;
 }
 
@@ -170,14 +184,13 @@ fn hostLogCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*wasm.
     _ = results;
     const ctx = ctxFromEnv(env) orelse return null;
     const mem = ctx.memory orelse return null;
-    const mem_data = mem.data();
 
     const a = args orelse return null;
     const level: i32 = a.data[0].of.i32;
     const ptr: usize = @intCast(@as(u32, @bitCast(a.data[1].of.i32)));
     const len: usize = @intCast(@as(u32, @bitCast(a.data[2].of.i32)));
 
-    const msg = mem_data[ptr .. ptr + len];
+    const msg = memSlice(mem, ptr, len) orelse return null;
     const log = std.log.scoped(.wasm);
     switch (level) {
         0 => log.debug("{s}", .{msg}),
@@ -211,19 +224,17 @@ fn hostRandomBytesCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results:
     const log = std.log.scoped(.wasm);
     const ctx = ctxFromEnv(env) orelse return null;
     const mem = ctx.memory orelse return null;
-    const mem_data = mem.data();
 
     const a = args orelse return null;
     const dest_ptr: usize = @intCast(@as(u32, @bitCast(a.data[0].of.i32)));
     const len: usize = @intCast(@as(u32, @bitCast(a.data[1].of.i32)));
 
-    const mem_size = mem.size();
-    if (dest_ptr + len > mem_size) {
-        log.err("host_random_bytes: out-of-bounds ptr={d} len={d} memsize={d}", .{ dest_ptr, len, mem_size });
+    const dest = memSlice(mem, dest_ptr, len) orelse {
+        log.err("host_random_bytes: out-of-bounds ptr={d} len={d} memsize={d}", .{ dest_ptr, len, mem.size() });
         return null;
-    }
+    };
 
-    std.Io.random(ctx.io, mem_data[dest_ptr .. dest_ptr + len]);
+    std.Io.random(ctx.io, dest);
     return null;
 }
 
@@ -309,7 +320,6 @@ fn hostCallServiceCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results:
     const log = std.log.scoped(.wasm);
     const ctx = ctxFromEnv(env) orelse return null;
     const mem = ctx.memory orelse return null;
-    const mem_data = mem.data();
 
     const a = args orelse return null;
     const svc_ptr: usize = @intCast(@as(u32, @bitCast(a.data[0].of.i32)));
@@ -325,11 +335,26 @@ fn hostCallServiceCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results:
     const out_ptr: usize = @intCast(@as(u32, @bitCast(a.data[10].of.i32)));
     const out_cap: usize = @intCast(@as(u32, @bitCast(a.data[11].of.i32)));
 
-    const svc = mem_data[svc_ptr..][0..svc_len];
-    const path = mem_data[path_ptr..][0..path_len];
-    const method = mem_data[method_ptr..][0..method_len];
-    const body: ?[]const u8 = if (body_len > 0) mem_data[body_ptr..][0..body_len] else null;
-    const headers_blob: []const u8 = if (hdr_len > 0) mem_data[hdr_ptr..][0..hdr_len] else "";
+    const svc = memSlice(mem, svc_ptr, svc_len) orelse {
+        setResult(results, -1);
+        return null;
+    };
+    const path = memSlice(mem, path_ptr, path_len) orelse {
+        setResult(results, -1);
+        return null;
+    };
+    const method = memSlice(mem, method_ptr, method_len) orelse {
+        setResult(results, -1);
+        return null;
+    };
+    const body: ?[]const u8 = if (body_len > 0) (memSlice(mem, body_ptr, body_len) orelse {
+        setResult(results, -1);
+        return null;
+    }) else null;
+    const headers_blob: []const u8 = if (hdr_len > 0) (memSlice(mem, hdr_ptr, hdr_len) orelse {
+        setResult(results, -1);
+        return null;
+    }) else "";
 
     const pool = ctx.upstreams orelse {
         setResult(results, -1);
@@ -420,9 +445,13 @@ fn hostCallServiceCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results:
         setResult(results, -2);
         return null;
     }
-    std.mem.writeInt(u32, mem_data[out_ptr..][0..4], resp.status, .little);
+    const out = memSlice(mem, out_ptr, total) orelse {
+        setResult(results, -2);
+        return null;
+    };
+    std.mem.writeInt(u32, out[0..4], resp.status, .little);
     if (resp.body.len > 0) {
-        @memcpy(mem_data[out_ptr + 4 ..][0..resp.body.len], resp.body);
+        @memcpy(out[4 .. 4 + resp.body.len], resp.body);
     }
     setResult(results, @intCast(total));
     return null;

@@ -55,6 +55,7 @@ test {
     std.testing.refAllDecls(@This());
 
     _ = @import("common/config.zig");
+    _ = @import("common/service.zig");
     _ = @import("common/keygen.zig");
     _ = @import("common/common.zig");
 
@@ -66,7 +67,6 @@ test {
     _ = @import("storage/field_extractor.zig");
     _ = @import("storage/query_helpers.zig");
 
-    _ = @import("storage/compression.zig");
     _ = @import("storage/query_engine.zig");
 
     _ = @import("common/metrics.zig");
@@ -80,6 +80,12 @@ test {
     _ = @import("tcp/message_buffer_pool.zig");
 
     _ = @import("engine/engine.zig");
+    _ = @import("tcp/server.zig");
+    _ = @import("tcp/replication.zig");
+
+    _ = @import("exim/export.zig");
+    _ = @import("exim/import.zig");
+    _ = @import("exim/manifest_yaml.zig");
 
     _ = @import("wasm/upstream_pool.zig");
 }

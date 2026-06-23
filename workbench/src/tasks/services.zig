@@ -46,7 +46,6 @@ pub const DbEntry = struct {
     name: []const u8,
     host: []const u8,
     port: u16,
-    tls: bool,
     label: []const u8,
     wasm_port: u16 = 0,
     app: []const u8 = "",
@@ -227,7 +226,7 @@ pub const AppServices = struct {
             log.info("registered systemdb under 'system' app in sysapps", .{});
         }
 
-        self.pool.register("systemdb", self.wb_config.system_db.host, self.wb_config.system_db.port, uid, key, false) catch {};
+        self.pool.register("systemdb", self.wb_config.system_db.host, self.wb_config.system_db.port, uid, key) catch {};
         self.pool.setRole("systemdb", "admin");
 
         const has_backup = if (storage.findByField(WbStorage.STORE_SCHEDULES, "name", "systemdb-backup") catch null) |existing| blk: {
@@ -297,7 +296,6 @@ pub const AppServices = struct {
         log.info("Auto-connected to system DB", .{});
     }
 
-
     pub fn loadDeployedServices(self: *AppServices, allocator: std.mem.Allocator) !void {
         _ = allocator;
         const storage = self.storage orelse return;
@@ -347,7 +345,6 @@ pub const AppServices = struct {
                     .name = name_dupe,
                     .host = host_dupe,
                     .port = @intCast(port),
-                    .tls = false,
                     .label = label,
                     .wasm_port = if (wasm_port) |wp| @intCast(wp) else 0,
                     .app = app_dupe,
@@ -356,7 +353,7 @@ pub const AppServices = struct {
                 const admin_uid = bson_util.getString(self.allocator, svc_data, "admin_uid");
                 const admin_key = bson_util.getString(self.allocator, svc_data, "admin_key");
                 if (admin_uid != null and admin_key != null) {
-                    self.pool.register(name, host, @intCast(port), admin_uid.?, admin_key.?, false) catch |err| {
+                    self.pool.register(name, host, @intCast(port), admin_uid.?, admin_key.?) catch |err| {
                         log.warn("failed to register '{s}' in pool: {}", .{ name, err });
                         continue;
                     };
@@ -422,7 +419,6 @@ pub const AppServices = struct {
                     .name = name_dupe,
                     .host = host_dupe,
                     .port = @intCast(port),
-                    .tls = false,
                     .label = label,
                     .wasm_port = if (wasm_port) |wp| @intCast(wp) else 0,
                 });
@@ -430,7 +426,7 @@ pub const AppServices = struct {
                 const admin_uid = bson_util.getString(self.allocator, svc_data, "admin_uid");
                 const admin_key = bson_util.getString(self.allocator, svc_data, "admin_key");
                 if (admin_uid != null and admin_key != null) {
-                    self.pool.register(name, host, @intCast(port), admin_uid.?, admin_key.?, false) catch |err| {
+                    self.pool.register(name, host, @intCast(port), admin_uid.?, admin_key.?) catch |err| {
                         log.warn("failed to register '{s}' in pool: {}", .{ name, err });
                         continue;
                     };
@@ -640,7 +636,7 @@ pub const AppServices = struct {
 
         const entry = &self.databases[index];
 
-        try self.pool.register(entry.name, entry.host, entry.port, uid, key, entry.tls);
+        try self.pool.register(entry.name, entry.host, entry.port, uid, key);
 
         const conn = self.pool.acquire(entry.name) catch |err| {
             self.pool.unregister(entry.name);
@@ -799,3 +795,17 @@ pub const AppServices = struct {
 
 
 };
+
+test "service kind serializes to its bson string" {
+    try std.testing.expectEqualStrings("wasm", ServiceKind.wasm.toBsonStr());
+    try std.testing.expectEqualStrings("sse_hub", ServiceKind.sse.toBsonStr());
+}
+
+test "service kind parses back from its bson string" {
+    try std.testing.expectEqual(ServiceKind.wasm, ServiceKind.fromBsonStr("wasm").?);
+    try std.testing.expectEqual(ServiceKind.sse, ServiceKind.fromBsonStr("sse_hub").?);
+}
+
+test "service kind is null for an unknown string" {
+    try std.testing.expect(ServiceKind.fromBsonStr("redis") == null);
+}

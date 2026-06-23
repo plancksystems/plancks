@@ -12,7 +12,6 @@ const services_mod = @import("../tasks/services.zig");
 const AppServices = services_mod.AppServices;
 const ServiceKind = services_mod.ServiceKind;
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 const log = std.log.scoped(.api_app);
 
@@ -25,25 +24,25 @@ pub fn handleCreate(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *co
     else if (std.mem.eql(u8, body.action, "delete"))
         try deleteApp(ctx.services, allocator, &body)
     else
-        try json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "Unknown action" });
+        try std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "Unknown action" }, .{ .emit_null_optional_fields = false });
 
     try res.json(out);
 }
 
 fn createApp(services: *AppServices, allocator: std.mem.Allocator, body: *const AppRequest) ![]const u8 {
-    if (body.name.len == 0) return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "App name is required" });
+    if (body.name.len == 0) return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
 
-    const storage = services.storage orelse return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "Storage not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
 
     if (try storage.getApp(body.name)) |existing| {
         allocator.free(existing.value);
-        return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "App already exists" });
+        return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "App already exists" }, .{ .emit_null_optional_fields = false });
     }
 
-    const svc_mgr = services.service_manager orelse return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "Service manager not initialized" });
+    const svc_mgr = services.service_manager orelse return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "Service manager not initialized" }, .{ .emit_null_optional_fields = false });
 
     svc_mgr.createAppDir(body.name) catch {
-        return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "Failed to create app directory" });
+        return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "Failed to create app directory" }, .{ .emit_null_optional_fields = false });
     };
 
     const p = Paths{ .data_dir = svc_mgr.data_dir };
@@ -55,29 +54,29 @@ fn createApp(services: *AppServices, allocator: std.mem.Allocator, body: *const 
     Dir.createDirPath(.cwd(), services.io, public_dir) catch {};
 
     _ = storage.putApp(body.name, body.description, app_dir, "shell") catch {
-        return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "Failed to store app" });
+        return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "Failed to store app" }, .{ .emit_null_optional_fields = false });
     };
 
     log.info("created shell app '{s}'", .{body.name});
 
     forwardAppToQueryNode(services, allocator, "create", body.name, body.description, 0);
 
-    return json.serialize(allocator, AppActionResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn deleteApp(services: *AppServices, allocator: std.mem.Allocator, body: *const AppRequest) ![]const u8 {
-    if (body.name.len == 0) return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "App name is required" });
+    if (body.name.len == 0) return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
 
-    const storage = services.storage orelse return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "Storage not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
 
-    const found = try storage.getApp(body.name) orelse return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "App not found" });
+    const found = try storage.getApp(body.name) orelse return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "App not found" }, .{ .emit_null_optional_fields = false });
     defer allocator.free(found.value);
 
     var doc = bson.BsonDocument.init(allocator, found.value, false) catch {
-        return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "Parse error" });
+        return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "Parse error" }, .{ .emit_null_optional_fields = false });
     };
     if (try doc.getArray("services")) |arr| {
-        if ((arr.len() catch 0) > 0) return json.serialize(allocator, AppActionResponse{ .success = false, .@"error" = "Cannot delete app with active services" });
+        if ((arr.len() catch 0) > 0) return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = false, .@"error" = "Cannot delete app with active services" }, .{ .emit_null_optional_fields = false });
     }
 
     storage.deleteApp(body.name) catch {};
@@ -91,19 +90,19 @@ fn deleteApp(services: *AppServices, allocator: std.mem.Allocator, body: *const 
 
     forwardAppToQueryNode(services, allocator, "delete", body.name, "", 0);
 
-    return json.serialize(allocator, AppActionResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AppActionResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 pub fn handleList(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const schnell.Request, res: *schnell.Response) anyerror!void {
     const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr orelse return error.NoContext));
     const services = ctx.services;
     const storage = services.storage orelse {
-        try res.json(try json.serialize(allocator, ListAppsResponse{ .success = true }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, ListAppsResponse{ .success = true }, .{ .emit_null_optional_fields = false }));
         return;
     };
 
     const docs = storage.listApps() catch {
-        try res.json(try json.serialize(allocator, ListAppsResponse{ .success = true }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, ListAppsResponse{ .success = true }, .{ .emit_null_optional_fields = false }));
         return;
     };
     defer storage.freeDocuments(docs);
@@ -192,7 +191,7 @@ pub fn handleList(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const 
         });
     }
 
-    const out = try json.serialize(allocator, ListAppsResponse{ .success = true, .apps = apps.items });
+    const out = try std.json.Stringify.valueAlloc(allocator, ListAppsResponse{ .success = true, .apps = apps.items }, .{ .emit_null_optional_fields = false });
     try res.json(out);
 }
 

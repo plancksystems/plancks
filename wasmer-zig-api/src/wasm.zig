@@ -15,6 +15,7 @@ pub const Error = error{
     ModuleInit,
     FuncInit,
     InstanceInit,
+    MeteringInit,
 };
 
 pub const Config = opaque {
@@ -23,7 +24,42 @@ pub const Config = opaque {
         return config;
     }
 
+    pub fn pushMiddleware(self: *Config, middleware: *Middleware) void {
+        wasm_config_push_middleware(self, middleware);
+    }
+
     extern "c" fn wasm_config_new() ?*Config;
+    extern "c" fn wasm_config_push_middleware(*Config, *Middleware) void;
+};
+
+pub const Middleware = opaque {};
+
+/// Wasmer instruction metering. Instrumenting a module's engine with a metering
+/// middleware makes every guest instruction consume points; when a call runs out
+/// it traps, bounding execution time for untrusted guests.
+pub const Metering = opaque {
+    pub const CostFunction = *const fn (operator: c_int) callconv(c_callconv) u64;
+
+    pub fn init(initial_limit: u64, cost_function: CostFunction) !*Metering {
+        return wasmer_metering_new(initial_limit, cost_function) orelse Error.MeteringInit;
+    }
+
+    pub fn asMiddleware(self: *Metering) !*Middleware {
+        return wasmer_metering_as_middleware(self) orelse Error.MeteringInit;
+    }
+
+    pub fn setRemainingPoints(instance: *Instance, points: u64) void {
+        wasmer_metering_set_remaining_points(instance, points);
+    }
+
+    pub fn pointsExhausted(instance: *Instance) bool {
+        return wasmer_metering_points_are_exhausted(instance);
+    }
+
+    extern "c" fn wasmer_metering_new(u64, CostFunction) ?*Metering;
+    extern "c" fn wasmer_metering_as_middleware(*Metering) ?*Middleware;
+    extern "c" fn wasmer_metering_set_remaining_points(*Instance, u64) void;
+    extern "c" fn wasmer_metering_points_are_exhausted(*Instance) bool;
 };
 
 pub const Engine = opaque {
@@ -460,7 +496,7 @@ pub const Memory = opaque {
     extern "c" fn wasm_memory_copy(*const Memory) ?*Memory;
     extern "c" fn wasm_memory_same(*const Memory, *const Memory) bool;
     extern "c" fn wasm_memory_new(*Store, *const MemoryType) ?*Memory;
-    extern "c" fn wasm_memory_type(*const Memory) *MemoryType;
+    extern "c" fn wasm_memory_type(*const Memory) ?*MemoryType;
     extern "c" fn wasm_memory_data(*Memory) [*]u8;
     extern "c" fn wasm_memory_data_size(*const Memory) usize;
     extern "c" fn wasm_memory_grow(*Memory, delta: u32) bool;
@@ -473,17 +509,27 @@ pub const Limits = extern struct {
 };
 
 pub const MemoryType = opaque {
-    pub fn init(limits: Limits) !*MemoryType {
-        return wasm_memorytype_new(&limits) orelse return error.InitMemoryType;
+    pub fn init(lim: Limits) !*MemoryType {
+        return wasm_memorytype_new(&lim) orelse return error.InitMemoryType;
     }
 
     pub fn deinit(self: *MemoryType) void {
         wasm_memorytype_delete(self);
     }
 
+    /// Declared page limits for this memory. `max` is `wasm_limits_max_default`
+    /// (0xffffffff) when the module declares no upper bound.
+    pub fn limits(self: *const MemoryType) Limits {
+        return wasm_memorytype_limits(self).*;
+    }
+
     extern "c" fn wasm_memorytype_new(*const Limits) ?*MemoryType;
     extern "c" fn wasm_memorytype_delete(*MemoryType) void;
+    extern "c" fn wasm_memorytype_limits(*const MemoryType) *const Limits;
 };
+
+/// Sentinel `max` value meaning "no declared upper bound" (wasm.h `wasm_limits_max_default`).
+pub const LIMITS_MAX_DEFAULT: u32 = 0xffffffff;
 
 pub const Table = opaque {};
 pub const Global = opaque {};

@@ -28,7 +28,6 @@ pub const ConnectionPool = struct {
         port: u16,
         uid: []const u8,
         key: []const u8,
-        tls: bool,
         conn: ?ServiceConn,
         mutex: Io.Mutex,
         role: []const u8,
@@ -75,7 +74,7 @@ pub const ConnectionPool = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn register(self: *ConnectionPool, name: []const u8, host: []const u8, port: u16, uid: []const u8, key: []const u8, tls: bool) !void {
+    pub fn register(self: *ConnectionPool, name: []const u8, host: []const u8, port: u16, uid: []const u8, key: []const u8) !void {
         if (self.entries.get(name)) |existing| {
             existing.closeConn();
             existing.freeStrings(self.allocator);
@@ -83,7 +82,6 @@ pub const ConnectionPool = struct {
             existing.port = port;
             existing.uid = try self.allocator.dupe(u8, uid);
             existing.key = try self.allocator.dupe(u8, key);
-            existing.tls = tls;
             existing.role = "";
             return;
         }
@@ -94,7 +92,6 @@ pub const ConnectionPool = struct {
             .port = port,
             .uid = try self.allocator.dupe(u8, uid),
             .key = try self.allocator.dupe(u8, key),
-            .tls = tls,
             .conn = null,
             .mutex = Io.Mutex.init,
             .role = "",
@@ -202,9 +199,8 @@ pub const ConnectionPool = struct {
 
         client.setTimeoutConfig(wb_timeout);
 
-        const conn_str = try std.fmt.allocPrint(self.allocator, "{s}:{d};uid={s};key={s};tls={s}", .{
+        const conn_str = try std.fmt.allocPrint(self.allocator, "{s}:{d};uid={s};key={s}", .{
             entry.host, entry.port, entry.uid, entry.key,
-            if (entry.tls) "true" else "false",
         });
         defer self.allocator.free(conn_str);
 

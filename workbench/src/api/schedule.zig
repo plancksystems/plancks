@@ -8,12 +8,11 @@ const ScheduleActionResponse = @import("../model/responses/schedule.zig").Schedu
 const AppServices = @import("../tasks/services.zig").AppServices;
 const WbStorage = @import("../tasks/storage.zig").WbStorage;
 const Ctx = @import("../ctx.zig").Ctx;
-const json_mod = @import("json.zig");
 
 pub fn handleList(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const schnell.Request, res: *schnell.Response) anyerror!void {
     const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr orelse return error.NoContext));
     const storage = ctx.services.storage orelse {
-        try res.json(try json_mod.serialize(allocator, ListSchedulesResponse{ .success = true }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, ListSchedulesResponse{ .success = true }, .{ .emit_null_optional_fields = false }));
         return;
     };
 
@@ -33,7 +32,7 @@ pub fn handleList(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const 
         }
     }
 
-    const out = try json_mod.serialize(allocator, ListSchedulesResponse{ .success = true, .schedules = schedules.items });
+    const out = try std.json.Stringify.valueAlloc(allocator, ListSchedulesResponse{ .success = true, .schedules = schedules.items }, .{ .emit_null_optional_fields = false });
     try res.json(out);
 }
 
@@ -50,21 +49,21 @@ pub fn handleAction(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *co
     else if (std.mem.eql(u8, body.action, "toggle"))
         try toggleSchedule(ctx.services, allocator, &body)
     else
-        try json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Unknown action" });
+        try std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Unknown action" }, .{ .emit_null_optional_fields = false });
 
     try res.json(out);
 }
 
 fn createSchedule(services: *AppServices, allocator: std.mem.Allocator, body: *const ScheduleRequest) ![]const u8 {
-    if (body.name.len == 0) return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Name is required" });
+    if (body.name.len == 0) return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Name is required" }, .{ .emit_null_optional_fields = false });
 
     const is_backup = std.mem.eql(u8, body.task_type, "backup");
     if (is_backup) {
-        if (body.app.len == 0) return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "App is required for backup tasks" });
+        if (body.app.len == 0) return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "App is required for backup tasks" }, .{ .emit_null_optional_fields = false });
     } else {
-        if (body.service.len == 0) return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Service is required for this task type" });
+        if (body.service.len == 0) return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Service is required for this task type" }, .{ .emit_null_optional_fields = false });
     }
-    const storage = services.storage orelse return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Storage not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
 
     var doc = bson.BsonDocument.empty(allocator);
     defer doc.deinit();
@@ -83,13 +82,13 @@ fn createSchedule(services: *AppServices, allocator: std.mem.Allocator, body: *c
 
     _ = try storage.put(WbStorage.STORE_SCHEDULES, doc.toBytes());
     storage.flush();
-    return json_mod.serialize(allocator, ScheduleActionResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn updateSchedule(services: *AppServices, allocator: std.mem.Allocator, body: *const ScheduleRequest) ![]const u8 {
-    const storage = services.storage orelse return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Storage not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
     const found = (storage.findByField(WbStorage.STORE_SCHEDULES, "name", body.name) catch null) orelse {
-        return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Schedule not found" });
+        return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Schedule not found" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(found.value);
 
@@ -113,28 +112,28 @@ fn updateSchedule(services: *AppServices, allocator: std.mem.Allocator, body: *c
     storage.delete(WbStorage.STORE_SCHEDULES, found.key) catch {};
     _ = try storage.put(WbStorage.STORE_SCHEDULES, doc.toBytes());
     storage.flush();
-    return json_mod.serialize(allocator, ScheduleActionResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn deleteSchedule(services: *AppServices, allocator: std.mem.Allocator, body: *const ScheduleRequest) ![]const u8 {
-    const storage = services.storage orelse return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Storage not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
     if (storage.findByField(WbStorage.STORE_SCHEDULES, "name", body.name) catch null) |found| {
         defer allocator.free(found.value);
         storage.delete(WbStorage.STORE_SCHEDULES, found.key) catch {};
         storage.flush();
     }
-    return json_mod.serialize(allocator, ScheduleActionResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn toggleSchedule(services: *AppServices, allocator: std.mem.Allocator, body: *const ScheduleRequest) ![]const u8 {
-    const storage = services.storage orelse return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Storage not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
     const found = (storage.findByField(WbStorage.STORE_SCHEDULES, "name", body.name) catch null) orelse {
-        return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Schedule not found" });
+        return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Schedule not found" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(found.value);
 
     var doc = bson.BsonDocument.init(allocator, found.value, false) catch {
-        return json_mod.serialize(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Parse error" });
+        return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = false, .@"error" = "Parse error" }, .{ .emit_null_optional_fields = false });
     };
     const enabled = (doc.getBool("enabled") catch null) orelse true;
     try doc.putBool("enabled", !enabled);
@@ -142,5 +141,5 @@ fn toggleSchedule(services: *AppServices, allocator: std.mem.Allocator, body: *c
     storage.delete(WbStorage.STORE_SCHEDULES, found.key) catch {};
     _ = try storage.put(WbStorage.STORE_SCHEDULES, doc.toBytes());
     storage.flush();
-    return json_mod.serialize(allocator, ScheduleActionResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, ScheduleActionResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }

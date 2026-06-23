@@ -5,6 +5,8 @@ const Yaml = yaml_pkg.Yaml;
 const bson = @import("bson");
 const schnell = @import("schnell");
 
+const log = std.log.scoped(.config);
+
 pub const MAX_KEY_SIZE: usize = 256;
 
 pub const NodeType = enum { system, user };
@@ -13,13 +15,9 @@ pub const Config = struct {
     node_type: NodeType = .user,
     address: []const u8,
     port: u16,
-    tls: struct {
-        enabled: bool = false,
-        cert_file: []const u8 = "",
-        key_file: []const u8 = "",
-    },
     primary: bool = true,
     max_sessions: u31,
+    allowed_ips: []const []const u8 = &.{},
     base_dir: []const u8 = ".",
     backup_dir: []const u8 = "",
     exim_dir: []const u8 = "",
@@ -87,6 +85,8 @@ pub const Config = struct {
         sync_interval_ms: u64 = 5000,
         address: []const u8 = "",
         port: u16 = 0,
+        uid: []const u8 = "",
+        key: []const u8 = "",
     } = .{},
 
     change_streams: struct {
@@ -107,10 +107,10 @@ pub const Config = struct {
         try wr.print("port: {d}\n", .{self.port});
         try wr.print("primary: {s}\n", .{if (self.primary) "true" else "false"});
         try wr.print("max_sessions: {d}\n", .{self.max_sessions});
-        try wr.writeAll("tls:\n");
-        try wr.print("  enabled: {s}\n", .{if (self.tls.enabled) "true" else "false"});
-        try wr.print("  cert_file: \"{s}\"\n", .{self.tls.cert_file});
-        try wr.print("  key_file: \"{s}\"\n", .{self.tls.key_file});
+        if (self.allowed_ips.len > 0) {
+            try wr.writeAll("allowed_ips:\n");
+            for (self.allowed_ips) |ip| try wr.print("  - \"{s}\"\n", .{ip});
+        }
         try wr.writeAll("session:\n");
         try wr.print("  idle_timeout_ms: {d}\n", .{self.session.idle_timeout_ms});
         try wr.writeAll("buffers:\n");
@@ -154,6 +154,8 @@ pub const Config = struct {
         try wr.print("  sync_interval_ms: {d}\n", .{self.replica.sync_interval_ms});
         try wr.print("  address: \"{s}\"\n", .{self.replica.address});
         try wr.print("  port: {d}\n", .{self.replica.port});
+        try wr.print("  uid: \"{s}\"\n", .{self.replica.uid});
+        try wr.print("  key: \"{s}\"\n", .{self.replica.key});
         try wr.print("base_dir: \"{s}\"\n", .{self.base_dir});
         if (self.backup_dir.len > 0) {
             try wr.print("backup_dir: \"{s}\"\n", .{self.backup_dir});
@@ -181,14 +183,6 @@ pub const Config = struct {
 
         try doc.putString("address", self.address);
         try doc.putInt32("port", @as(i32, @intCast(self.port)));
-        {
-            var sub = bson.BsonDocument.empty(allocator);
-            defer sub.deinit();
-            try sub.putBool("enabled", self.tls.enabled);
-            try sub.putString("cert_file", self.tls.cert_file);
-            try sub.putString("key_file", self.tls.key_file);
-            try doc.putDocument("tls", sub);
-        }
         try doc.putBool("primary", self.primary);
         try doc.putInt32("max_sessions", @as(i32, @intCast(self.max_sessions)));
         try doc.putString("base_dir", self.base_dir);
@@ -291,6 +285,8 @@ pub const Config = struct {
             try sub.putInt64("sync_interval_ms", @as(i64, @intCast(self.replica.sync_interval_ms)));
             try sub.putString("address", self.replica.address);
             try sub.putInt32("port", @as(i32, @intCast(self.replica.port)));
+            try sub.putString("uid", self.replica.uid);
+            try sub.putString("key", self.replica.key);
             try doc.putDocument("replica", sub);
         }
         return try allocator.dupe(u8, doc.toBytes());
@@ -412,6 +408,18 @@ pub const Config = struct {
                 }
             }
             if (try sub.getInt32("port")) |v| self.replica.port = @intCast(v);
+            if (try sub.getString("uid")) |v| {
+                if (!std.mem.eql(u8, self.replica.uid, v)) {
+                    if (self.replica.uid.len > 0) allocator.free(self.replica.uid);
+                    self.replica.uid = if (v.len > 0) try allocator.dupe(u8, v) else "";
+                }
+            }
+            if (try sub.getString("key")) |v| {
+                if (!std.mem.eql(u8, self.replica.key, v)) {
+                    if (self.replica.key.len > 0) allocator.free(self.replica.key);
+                    self.replica.key = if (v.len > 0) try allocator.dupe(u8, v) else "";
+                }
+            }
         }
     }
 
@@ -494,23 +502,40 @@ pub const Config = struct {
                 "";
         }
         self.replica.port = parsed.replica.port;
+        if (!std.mem.eql(u8, self.replica.uid, parsed.replica.uid)) {
+            if (self.replica.uid.len > 0) allocator.free(self.replica.uid);
+            self.replica.uid = if (parsed.replica.uid.len > 0)
+                try allocator.dupe(u8, parsed.replica.uid)
+            else
+                "";
+        }
+        if (!std.mem.eql(u8, self.replica.key, parsed.replica.key)) {
+            if (self.replica.key.len > 0) allocator.free(self.replica.key);
+            self.replica.key = if (parsed.replica.key.len > 0)
+                try allocator.dupe(u8, parsed.replica.key)
+            else
+                "";
+        }
     }
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.address);
         allocator.free(self.base_dir);
         if (self.backup_dir.len > 0) allocator.free(self.backup_dir);
+        if (self.exim_dir.len > 0) allocator.free(self.exim_dir);
         allocator.free(self.paths.vlog);
         allocator.free(self.paths.wal);
         allocator.free(self.paths.index);
-        if (self.tls.enabled) {
-            allocator.free(self.tls.cert_file);
-            allocator.free(self.tls.key_file);
-        }
         if (self.replica.address.len > 0) allocator.free(self.replica.address);
+        if (self.replica.uid.len > 0) allocator.free(self.replica.uid);
+        if (self.replica.key.len > 0) allocator.free(self.replica.key);
         if (self.durability.log_archive.dest_path.len > 0) allocator.free(self.durability.log_archive.dest_path);
         if (self.logging.path.len > 0) allocator.free(self.logging.path);
         if (self.logging.level.len > 0) allocator.free(self.logging.level);
+        if (self.allowed_ips.len > 0) {
+            for (self.allowed_ips) |ip| allocator.free(ip);
+            allocator.free(self.allowed_ips);
+        }
         allocator.destroy(self);
     }
 
@@ -537,17 +562,19 @@ pub const Config = struct {
         } else {
             cfg.backup_dir = "";
         }
+        cfg.exim_dir = if (parsed.exim_dir.len > 0) try allocator.dupe(u8, parsed.exim_dir) else "";
         cfg.paths.vlog = try std.fmt.allocPrint(allocator, "{s}/logs", .{cfg.base_dir});
         cfg.paths.wal = try std.fmt.allocPrint(allocator, "{s}/wals", .{cfg.base_dir});
         cfg.paths.index = try std.fmt.allocPrint(allocator, "{s}/indexes", .{cfg.base_dir});
 
-        if (parsed.tls.enabled) {
-            cfg.tls.enabled = true;
-            cfg.tls.cert_file = try allocator.dupe(u8, parsed.tls.cert_file);
-            cfg.tls.key_file = try allocator.dupe(u8, parsed.tls.key_file);
-        }
         if (parsed.replica.address.len > 0) {
             cfg.replica.address = try allocator.dupe(u8, parsed.replica.address);
+        }
+        if (parsed.replica.uid.len > 0) {
+            cfg.replica.uid = try allocator.dupe(u8, parsed.replica.uid);
+        }
+        if (parsed.replica.key.len > 0) {
+            cfg.replica.key = try allocator.dupe(u8, parsed.replica.key);
         }
         cfg.durability.log_archive.dest_path = try allocator.dupe(u8, parsed.durability.log_archive.dest_path);
         cfg.logging.path = try std.fmt.allocPrint(allocator, "{s}/planck.log", .{cfg.base_dir});
@@ -571,7 +598,39 @@ pub const Config = struct {
         } else {
             cfg.change_streams.stores = &.{};
         }
+
+        if (parsed.allowed_ips.len > 0) {
+            const ips = try allocator.alloc([]const u8, parsed.allowed_ips.len);
+            for (parsed.allowed_ips, 0..) |ip, i| ips[i] = try allocator.dupe(u8, ip);
+            cfg.allowed_ips = ips;
+        } else {
+            cfg.allowed_ips = &.{};
+        }
+
+        try cfg.validate();
         return cfg;
+    }
+
+    pub fn validate(self: *const Config) !void {
+        if (self.address.len == 0) return invalidConfig("address is empty");
+        if (self.port == 0) return invalidConfig("port must be non-zero");
+        if (self.max_sessions == 0) return invalidConfig("max_sessions must be > 0");
+        if (self.buffers.memtable == 0 or self.buffers.vlog == 0 or self.buffers.wal == 0)
+            return invalidConfig("buffers.memtable/vlog/wal must be > 0");
+        if (self.file_sizes.vlog == 0 or self.file_sizes.wal == 0)
+            return invalidConfig("file_sizes.vlog/wal must be > 0");
+        if (self.index.primary.pool_size == 0 or self.index.secondary.pool_size == 0)
+            return invalidConfig("index pool_size must be > 0");
+        if (self.gc.dead_ratio > 100) return invalidConfig("gc.dead_ratio must be 0..100");
+        if (self.limits.max_batch_size == 0 or self.limits.max_message_size == 0)
+            return invalidConfig("limits.max_batch_size/max_message_size must be > 0");
+        if (self.replica.enabled and (self.replica.address.len == 0 or self.replica.port == 0))
+            return invalidConfig("replica.enabled requires address and port");
+    }
+
+    fn invalidConfig(msg: []const u8) error{InvalidConfig} {
+        log.err("invalid db.yaml: {s}", .{msg});
+        return error.InvalidConfig;
     }
 };
 

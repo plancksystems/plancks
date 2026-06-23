@@ -2,11 +2,7 @@ address: "0.0.0.0"
 primary: true
 max_sessions: 128
 port: 24010
-base_dir: "/Users/kamlesh/plancksystems/planck/db/qsr"
-tls:
-  enabled: false
-  cert_file: ""
-  key_file: ""
+base_dir: "./data"
 session:
   idle_timeout_ms: 604800000
 buffers:

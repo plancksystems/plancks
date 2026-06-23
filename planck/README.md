@@ -21,10 +21,11 @@ ways in that are _not_ symmetric:
 
 - **TCP wire protocol** (port range to use 24000): how clients talk to the
   database directly. `planck-zig-client`, `planctl`, and `workbench`
-  connect here; a connection enters through a TLS 1.3 session pool and
-  passes authentication (RBAC, sessions, throttling) before reaching
-  the engine.
-- **HTTP** (port range to use 3000, TLS 1.3): _not_ a database wire
+  connect here; a connection passes authentication (RBAC, sessions,
+  throttling) before reaching the engine. The wire itself is plaintext —
+  it's meant to stay on a trusted boundary (loopback / private network /
+  a TLS-terminating proxy), not be exposed directly.
+- **HTTP** (port range to use 3000, optional TLS): _not_ a database wire
   protocol. It exposes the **WASM app hosted inside planck** over HTTP:
   a browser or HTTP client hits the app, the request runs in the
   in-process WASM runtime (a pooled wasmer instance per request), and
@@ -85,6 +86,17 @@ Old segments accumulate dead bytes as updates / deletes invalidate
 their entries. `gc.dead_ratio` triggers a background GC pass that
 copies live entries to a new segment and unlinks the old one. The GC happens in offline mode where read/writes are not allowed.
 
+The GC swap is **crash-safe**: it builds the compacted segment + rebuilt
+index as shadow files, writes a marker, then atomically renames them
+into place; on startup planck rolls a half-finished swap forward, so a
+crash mid-GC always opens with either the old or the new state — never a
+missing index/segment.
+
+Each vlog segment header carries a version and a CRC32 over its fields;
+the header is bumped to v2 in this build, so **pre-hardening (v1) data
+files are not loadable — reinitialize the data dir** when moving onto
+this build.
+
 ### Primary index (B+ tree)
 
 Persistent B+ tree mapping `u128` primary key to a vlog pointer
@@ -109,9 +121,13 @@ populating).
 ### WAL (write-ahead log)
 
 Every write op is appended to a per-host WAL before being applied to
-the memtable. A background fsync runs at `flush_interval_in_ms`.
-After a crash, recovery replays the WAL into a fresh memtable and
-discards entries already flushed to the vlog.
+the memtable. A background fsync runs at `flush_interval_in_ms`; set it
+to `0` for a synchronous fsync on every commit (tighter durability,
+lower throughput). After a crash, recovery replays the WAL into a fresh
+memtable and discards entries already flushed to the vlog. Each record
+is length- and checksum-validated on replay: a single corrupt record is
+skipped and replay continues, while a torn tail stops recovery at that
+point.
 
 LSN (log sequence number) is monotonically increasing across the
 host. Replication uses it as a cursor; the checkpoint header tracks
@@ -127,21 +143,26 @@ Two files, both YAML:
 
 - `db.yaml`: storage tuning, TCP wire, durability, replication,
   change streams. Read by the DB itself.
-- `service.yaml`: identity, WASM hosting, outbound upstream
-  allowlist. Read by the WASM runtime.
+- `service.yaml`: identity, the HTTP front-end (`http` + `tls`), WASM
+  hosting, outbound upstream allowlist. Read by the WASM runtime.
+
+TLS lives in `service.yaml` (the HTTP edge), not `db.yaml` — the wire
+protocol is plaintext (see TLS section).
+
+`db.yaml` is validated on load — planck refuses to start (rather than
+run misconfigured) on things like `port: 0`, an empty `address`, zero
+buffer/file sizes, or `replica.enabled` without an address+port.
 
 ### db.yaml
 
 ```yaml
-address: "0.0.0.0"
+address: "0.0.0.0" # use 127.0.0.1 for local dev; a non-loopback bind
+# is refused while the admin holds the default key (see Security)
 primary: true
 max_sessions: 128
 port: 24010 # TCP wire port; clients connect here
-
-tls:
-  enabled: false # see TLS section below
-  cert_file: ""
-  key_file: ""
+allowed_ips: # optional source allowlist for the plaintext wire; omit/empty = accept all
+  - "10.0.0.7" # loopback is always allowed; listed IPs are the only other peers accepted
 
 session:
   idle_timeout_ms: 604800000
@@ -196,6 +217,8 @@ replica:
   sync_interval_ms: 5000
   address: "127.0.0.1"
   port: 0
+  uid: "" # admin uid on the replica; REQUIRED when enabled (the primary
+  key: "" # authenticates into the replica before shipping WAL)
 
 change_streams: # omit the block to disable entirely
   ring_capacity: 16384
@@ -210,22 +233,28 @@ change_streams: # omit the block to disable entirely
 name: my_app
 description: "..."
 
+tls: # TLS for the HTTP front-end below (the only externally-facing entry point)
+  enabled: false # when true, cert_file + key_file are served over TLS 1.3
+  cert_file: ""
+  key_file: ""
+
+http:
+  host: "127.0.0.1"
+  port: 3010 # browser-facing HTTP port for the WASM app
+  max_connections: 10000
+  max_header_size: 8192
+  max_body_size: 1048576
+  response_buffer_size: 65536
+  idle_timeout_ms: 30000
+  max_requests_per_connection: 10000
+  drain_timeout_ms: 5000
+  static_dir: "../../public" # static assets served from this dir
+
 wasm:
   enabled: true
   min_instances: 2
   max_instances: 8
   autoscale: false
-  http:
-    host: "127.0.0.1"
-    port: 3010 # browser-facing HTTP port for the WASM app
-    max_connections: 10000
-    max_header_size: 8192
-    max_body_size: 1048576
-    response_buffer_size: 65536
-    idle_timeout_ms: 30000
-    max_requests_per_connection: 10000
-    drain_timeout_ms: 5000
-    static_dir: "../../public" # static assets served from this dir
 
 upstreams: # explicit outbound allowlist
   - name: google_oauth
@@ -326,6 +355,14 @@ so the only way to scale is more instances in the pool. Default pool
 is `min: 2, max: 8`; `autoscale: false` means it stays at min and
 only grows under explicit pressure.
 
+Guest isolation: each `process()` call runs under an instruction
+**fuel budget** (wasmer metering middleware) — a runaway/infinite-loop
+guest traps with `error.WasmFuelExhausted` instead of pinning the
+thread forever. Every guest pointer passed to a host extern is
+bounds-checked against the instance's memory before any copy, and an
+instance whose memory grows past a cap is recycled on release so a
+single bad request can't permanently bloat the pool.
+
 The WASM runtime carries its own per-request metrics
 (`GET /__wasm_metrics`); see `src/wasm/metrics.zig` for the counter
 list.
@@ -338,11 +375,31 @@ replica:
   sync_interval_ms: 5000
   address: "127.0.0.1"
   port: 24011
+  uid: "admin" # an admin user on the follower
+  key: "<follower-admin-key>"
 ```
 
 Primary ships WAL segments to the configured follower address.
 Follower applies them in order; reads on the follower see eventually-
 consistent state at most `sync_interval_ms` behind.
+
+**The replication link is authenticated.** Before shipping, the primary
+opens a connection to the follower and authenticates as `replica.uid` /
+`replica.key` (which must be an admin user on the follower — `ShipWal`
+requires admin). If `uid`/`key` are unset, the primary refuses to ship
+(`error.NoReplicationCredentials`) rather than send unauthenticated
+frames.
+
+The shipping link uses the same plaintext wire protocol as any other
+client. When the follower is on **another host**, run the link over an
+encrypted network tunnel (WireGuard, stunnel, or a VPN) and set the
+follower's `allowed_ips` to the primary's address so its port only
+accepts the primary. On a single host the loopback link needs nothing
+extra.
+
+A non-primary node (`primary: false`) is **read-only for clients** —
+client writes are rejected with the `.not_leader` status; replicated
+writes arrive only via the authenticated `ShipWal` path.
 
 There's no automatic failover. A follower that becomes a primary is a
 deliberate operator action (flip `primary: true` in its config and
@@ -356,20 +413,48 @@ created at first start with a well-known default key; rotate it with
 the `RegenerateKey` op (surfaced through workbench), which clears the
 default-key flag.
 
-`security.max_failed_attempts` + `lockout_duration_ms` are per-uid; a
-brute-force attempt locks the uid out with exponential backoff
-(`lockout_multiplier`). Failed-attempt counters live in the system
-catalog so they survive restarts.
+**Default-key bind guard:** while the `admin` user still holds the
+default key, planck refuses to start on a non-loopback `address`
+(`error.DefaultKeyOnPublicBind`) — bind `127.0.0.1` for local dev, or
+rotate the key before exposing the port publicly. A loopback bind with
+the default key is allowed (with a warning).
+
+`security.max_failed_attempts` + `lockout_duration_ms` drive an
+exponential-backoff lockout (`lockout_multiplier`). The lockout is
+keyed on the **client IP**, not the uid, so an attacker can't lock a
+victim's account by spamming its uid; brute-force protection is
+preserved (on platforms where the peer IP isn't available the key
+falls back to uid). Secrets (session tokens, user keys, salts) are
+generated from the OS CSPRNG.
 
 User permissions are role-based (admin, read_write, read_only, none).
 Per-store ACLs are on the roadmap but not in 0.1.0.
 
 ## TLS
 
-`tls.enabled: true` plus a cert and key file makes the TCP wire
-TLS 1.3. WASM-hosted apps default to TLS for the HTTP front-end; you
-can disable it when planck sits behind a proxy that terminates TLS for
-you.
+TLS is applied at the **edge — the HTTP front-end**, configured in
+`service.yaml`:
+
+```yaml
+tls:
+  enabled: true
+  cert_file: "/path/to/cert.pem"
+  key_file: "/path/to/key.pem"
+```
+
+With `enabled: true` and a cert/key, the WASM app's HTTP server runs
+TLS 1.3. This is the only externally-facing surface, so it's where TLS
+belongs. TLS is **off by default** (`enabled: false`) — on a single host
+you'll often let a **reverse proxy** terminate TLS instead and leave it
+off.
+
+The **TCP wire protocol is plaintext** by design — it's an internal
+control-plane link (workbench → DB, primary → follower), expected to stay
+on a trusted boundary: loopback, a private network, or behind a
+proxy/firewall. Restrict it to known sources with `allowed_ips` in
+`db.yaml` (loopback is always allowed; an empty list accepts all), and
+when it must cross hosts, run it over an encrypted tunnel rather than
+exposing the port directly.
 
 ## Backup + Restore
 
@@ -403,6 +488,13 @@ recovery.
 - **GC pressure**: vlog GC runs in the background based on
   `dead_ratio`. If you see write amplification climb, lower the
   threshold; if you see GC churn during peak, raise it.
+- **Idle / slow connections**: `session.idle_timeout_ms` is enforced by
+  a background reaper that force-closes connections idle past the
+  timeout (covers stalled/slow clients holding a session slot), not
+  just checked after a read returns.
+- **Shutdown**: `SIGINT`/`SIGTERM` trigger a graceful shutdown — the
+  accept loop drains and the WAL is flushed before exit (POSIX only;
+  Windows has no signal handler).
 
 ## License
 

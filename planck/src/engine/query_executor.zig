@@ -21,6 +21,8 @@ const AggregateResult = query_engine.AggregateResult;
 const Engine = @import("engine.zig").Engine;
 const log = std.log.scoped(.query_executor);
 
+const MAX_AGGREGATE_GROUPS: usize = 1_000_000;
+
 pub fn queryDocs(engine: *Engine, store_ns: []const u8, query_json: []const u8) ![]Entry {
 
     var parsed = try query_engine.parseJsonQuery(engine.allocator, query_json);
@@ -168,6 +170,10 @@ pub fn queryDocs(engine: *Engine, store_ns: []const u8, query_json: []const u8) 
 
     const collect_limit: u32 = if (has_sort) std.math.maxInt(u32) else actual_limit;
     const collect_offset: u32 = if (has_sort) 0 else actual_offset;
+    const sort_target_k: u32 = if (has_sort and actual_limit < std.math.maxInt(u32))
+        actual_offset +| actual_limit
+    else
+        std.math.maxInt(u32);
 
     const strategy = parsed.getBestIndexStrategy();
 
@@ -186,7 +192,7 @@ pub fn queryDocs(engine: *Engine, store_ns: []const u8, query_json: []const u8) 
         engine.catalog_mutex.lock(engine.io);
         var indexes = engine.catalog.getIndexesForStore(store_ns, engine.allocator) catch {
             engine.catalog_mutex.unlock(engine.io);
-            try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset);
+            try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset, sort_target_k);
             return results.toOwnedSlice(engine.allocator);
         };
         defer indexes.deinit(engine.allocator);
@@ -282,28 +288,23 @@ pub fn queryDocs(engine: *Engine, store_ns: []const u8, query_json: []const u8) 
                 .eq => |pred| engine.db.findBySecondaryIndex(index_ns, pred.value) catch |err| {
                     engine.db_mutex.unlock(engine.io);
                     log.warn("queryDocs: index eq lookup failed: {}, falling back to full scan", .{err});
-                    try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset);
+                    try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset, sort_target_k);
                     return results.toOwnedSlice(engine.allocator);
                 },
                 .range => |r| engine.db.findBySecondaryIndexRange(index_ns, r.min_val, r.max_val, r.min_inclusive, r.max_inclusive) catch |err| {
                     engine.db_mutex.unlock(engine.io);
                     log.warn("queryDocs: index range scan failed: {}, falling back to full scan", .{err});
-                    try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset);
+                    try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset, sort_target_k);
                     return results.toOwnedSlice(engine.allocator);
                 },
                 .in_list => |il| engine.db.findBySecondaryIndexMulti(index_ns, il.values) catch |err| {
                     engine.db_mutex.unlock(engine.io);
                     log.warn("queryDocs: index multi-lookup failed: {}, falling back to full scan", .{err});
-                    try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset);
+                    try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset, sort_target_k);
                     return results.toOwnedSlice(engine.allocator);
                 },
             };
             defer primary_keys.deinit(engine.allocator);
-
-            const sort_target_k: u32 = if (has_sort and actual_limit < std.math.maxInt(u32))
-                actual_offset +| actual_limit
-            else
-                std.math.maxInt(u32);
 
             for (primary_keys.items) |key| {
                 if (count >= collect_limit) break;
@@ -328,28 +329,7 @@ pub fn queryDocs(engine: *Engine, store_ns: []const u8, query_json: []const u8) 
                     .kind = .read,
                 });
                 count += 1;
-
-                if (sort_target_k < std.math.maxInt(u32) and count >= sort_target_k *| 2) {
-                    if (parsed.sort_fields.items.len > 1) {
-                        const sort_specs = parsed.sort_fields.items;
-                        std.sort.pdq(Entry, results.items, sort_specs, struct {
-                            fn lessThan(specs: []const query_engine.SortSpec, a: Entry, b: Entry) bool {
-                                return compareByMultiFields(a.value, b.value, specs);
-                            }
-                        }.lessThan);
-                    } else if (parsed.sort_field) |sf| {
-                        std.sort.pdq(Entry, results.items, SortContext{ .field = sf, .ascending = parsed.sort_ascending }, struct {
-                            fn lessThan(ctx: SortContext, a: Entry, b: Entry) bool {
-                                return compareByField(a.value, b.value, ctx.field, ctx.ascending);
-                            }
-                        }.lessThan);
-                    }
-                    for (results.items[sort_target_k..]) |entry| {
-                        engine.allocator.free(entry.value);
-                    }
-                    results.shrinkRetainingCapacity(sort_target_k);
-                    count = sort_target_k;
-                }
+                maybeTrimTopK(engine, &results, &parsed, sort_target_k, &count);
             }
             engine.db_mutex.unlock(engine.io);
             used_index = true;
@@ -357,7 +337,7 @@ pub fn queryDocs(engine: *Engine, store_ns: []const u8, query_json: []const u8) 
     }
 
     if (!used_index) {
-        try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset);
+        try fullScanWithFilter(engine, &results, store_id, &parsed, collect_limit, collect_offset, sort_target_k);
     }
 
     if (parsed.sort_fields.items.len > 1) {
@@ -417,7 +397,29 @@ pub fn queryDocs(engine: *Engine, store_ns: []const u8, query_json: []const u8) 
     return results.toOwnedSlice(engine.allocator);
 }
 
-fn fullScanWithFilter(engine: *Engine, results: *std.ArrayList(Entry), store_id: u16, parsed: *const ParsedQuery, limit: u32, offset: u32) !void {
+fn maybeTrimTopK(engine: *Engine, results: *std.ArrayList(Entry), parsed: *const ParsedQuery, sort_target_k: u32, count: *u32) void {
+    if (sort_target_k == std.math.maxInt(u32) or count.* < sort_target_k *| 2) return;
+
+    if (parsed.sort_fields.items.len > 1) {
+        std.sort.pdq(Entry, results.items, parsed.sort_fields.items, struct {
+            fn lessThan(specs: []const query_engine.SortSpec, a: Entry, b: Entry) bool {
+                return compareByMultiFields(a.value, b.value, specs);
+            }
+        }.lessThan);
+    } else if (parsed.sort_field) |sf| {
+        std.sort.pdq(Entry, results.items, SortContext{ .field = sf, .ascending = parsed.sort_ascending }, struct {
+            fn lessThan(ctx: SortContext, a: Entry, b: Entry) bool {
+                return compareByField(a.value, b.value, ctx.field, ctx.ascending);
+            }
+        }.lessThan);
+    } else return;
+
+    for (results.items[sort_target_k..]) |entry| engine.allocator.free(entry.value);
+    results.shrinkRetainingCapacity(sort_target_k);
+    count.* = sort_target_k;
+}
+
+fn fullScanWithFilter(engine: *Engine, results: *std.ArrayList(Entry), store_id: u16, parsed: *const ParsedQuery, limit: u32, offset: u32, sort_target_k: u32) !void {
     const after_key = parsed.after_key;
     var seen_keys = std.AutoHashMap(u128, void).init(engine.allocator);
     defer seen_keys.deinit();
@@ -466,6 +468,7 @@ fn fullScanWithFilter(engine: *Engine, results: *std.ArrayList(Entry), store_id:
                 .kind = .read,
             });
             count += 1;
+            maybeTrimTopK(engine, results, parsed, sort_target_k, &count);
         }
 
         var lists_iter = engine.db.memtable.lists.iterator();
@@ -505,6 +508,7 @@ fn fullScanWithFilter(engine: *Engine, results: *std.ArrayList(Entry), store_id:
                     .kind = .read,
                 });
                 count += 1;
+                maybeTrimTopK(engine, results, parsed, sort_target_k, &count);
             }
         }
     }
@@ -568,6 +572,7 @@ fn fullScanWithFilter(engine: *Engine, results: *std.ArrayList(Entry), store_id:
                 .kind = .read,
             });
             count += 1;
+            maybeTrimTopK(engine, results, parsed, sort_target_k, &count);
         }
     }
 }
@@ -957,13 +962,15 @@ const SortContext = struct {
 pub fn scanDocs(engine: *Engine, start_key: ?u128, limit_count: u32, skip_count: u32) ![]Entry {
     const seek_key = start_key orelse 0;
 
+    engine.primary_index_mutex.lock(engine.io);
+    defer engine.primary_index_mutex.unlock(engine.io);
     engine.db_mutex.lock(engine.io);
+    defer engine.db_mutex.unlock(engine.io);
 
     const has_inactive = engine.db.memtable.lists.len > 0;
 
     if (!has_inactive) {
         var active_iter = engine.db.memtable.active.seekIterator(seek_key);
-        engine.db_mutex.unlock(engine.io);
 
         const btree_populated = engine.btree_has_data.load(.acquire);
 
@@ -1012,9 +1019,6 @@ pub fn scanDocs(engine: *Engine, start_key: ?u128, limit_count: u32, skip_count:
 
             return results.toOwnedSlice(engine.allocator);
         }
-
-        engine.primary_index_mutex.lock(engine.io);
-        defer engine.primary_index_mutex.unlock(engine.io);
 
         var start_key_buf: [@sizeOf(u128)]u8 = undefined;
         std.mem.writeInt(u128, &start_key_buf, seek_key, .big);
@@ -1140,14 +1144,9 @@ pub fn scanDocs(engine: *Engine, start_key: ?u128, limit_count: u32, skip_count:
         }
     }
 
-    engine.db_mutex.unlock(engine.io);
-
     for (0..num_inactive) |i| {
         inactive_peeks_buf[i] = inactive_iters_buf[i].next();
     }
-
-    engine.primary_index_mutex.lock(engine.io);
-    defer engine.primary_index_mutex.unlock(engine.io);
 
     var start_key_buf: [@sizeOf(u128)]u8 = undefined;
     std.mem.writeInt(u128, &start_key_buf, seek_key, .big);
@@ -1294,6 +1293,9 @@ pub fn aggregateDocs(engine: *Engine, store_ns: []const u8, query_json: []const 
                 return err;
             };
             defer allocator.free(group_key);
+
+            if (g.count() >= MAX_AGGREGATE_GROUPS and g.get(group_key) == null)
+                return error.AggregateGroupLimitExceeded;
 
             const gop = try g.getOrPut(group_key);
             if (!gop.found_existing) {

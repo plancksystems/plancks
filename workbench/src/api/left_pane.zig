@@ -6,7 +6,6 @@ const proto = planck.proto;
 const types = @import("../model/types.zig");
 const LeftPaneResponse = @import("../model/responses/left_pane.zig").LeftPaneResponse;
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 pub const LeftPaneRequest = struct {
     service: ?[]const u8 = null,
@@ -18,13 +17,13 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const sc
 
     const params = req.getParams(LeftPaneRequest);
     const service_name = params.service orelse {
-        const empty = try json.serialize(allocator, LeftPaneResponse{ .success = true });
+        const empty = try std.json.Stringify.valueAlloc(allocator, LeftPaneResponse{ .success = true }, .{ .emit_null_optional_fields = false });
         try res.json(empty);
         return;
     };
 
     const conn = services.pool.acquire(service_name) catch {
-        const empty = try json.serialize(allocator, LeftPaneResponse{ .success = true });
+        const empty = try std.json.Stringify.valueAlloc(allocator, LeftPaneResponse{ .success = true }, .{ .emit_null_optional_fields = false });
         try res.json(empty);
         return;
     };
@@ -94,10 +93,10 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const sc
         try svc_list.append(allocator, status);
     }
 
-    const body = try json.serialize(allocator, LeftPaneResponse{
+    const body = try std.json.Stringify.valueAlloc(allocator, LeftPaneResponse{
         .success = true,
         .stores = stores.items,
         .services = svc_list.items,
-    });
+    }, .{ .emit_null_optional_fields = false });
     try res.json(body);
 }

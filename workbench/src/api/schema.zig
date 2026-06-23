@@ -7,7 +7,6 @@ const DbEntry = services_mod.DbEntry;
 const planck = @import("planck");
 const proto = planck.proto;
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 const log = std.log.scoped(.api_schema);
 
@@ -16,31 +15,31 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const sc
     const body = try req.getBody(allocator, SchemaRequest);
 
     if (body.action.len == 0) {
-        try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = "Action is required" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = "Action is required" }, .{ .emit_null_optional_fields = false }));
         return;
     }
     if (body.ns.len == 0) {
-        try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = "Namespace is required" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = "Namespace is required" }, .{ .emit_null_optional_fields = false }));
         return;
     }
 
     const raw_name = body.service orelse {
-        try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = "Service is required" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = "Service is required" }, .{ .emit_null_optional_fields = false }));
         return;
     };
 
     const service_name = resolveWriteServiceName(raw_name, ctx.services.databases);
 
     if (std.mem.eql(u8, service_name, "systemdb")) {
-        try res.json(try json.serialize(allocator, SchemaResponse{
+        try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{
             .success = false,
             .@"error" = "systemdb is read-only — schema changes are managed by the workbench bootstrap",
-        }));
+        }, .{ .emit_null_optional_fields = false }));
         return;
     }
 
     const conn = ctx.services.pool.acquire(service_name) catch {
-        try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = "Not connected to service" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = "Not connected to service" }, .{ .emit_null_optional_fields = false }));
         return;
     };
     var broken = false;
@@ -54,12 +53,12 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const sc
             .description = if (body.description.len > 0) body.description else null,
         }) catch |err| {
             broken = true;
-            try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = @errorName(err) }));
+            try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false }));
             return;
         };
     } else if (std.mem.eql(u8, body.action, "create-index")) {
         if (body.field.len == 0) {
-            try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = "Field name is required" }));
+            try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = "Field name is required" }, .{ .emit_null_optional_fields = false }));
             return;
         }
 
@@ -73,27 +72,27 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const sc
             .description = if (body.description.len > 0) body.description else null,
         }) catch |err| {
             broken = true;
-            try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = @errorName(err) }));
+            try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false }));
             return;
         };
     } else if (std.mem.eql(u8, body.action, "drop-store")) {
         conn.client.drop(.Store, body.ns) catch |err| {
             broken = true;
-            try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = @errorName(err) }));
+            try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false }));
             return;
         };
     } else if (std.mem.eql(u8, body.action, "drop-index")) {
         conn.client.drop(.Index, body.ns) catch |err| {
             broken = true;
-            try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = @errorName(err) }));
+            try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false }));
             return;
         };
     } else {
-        try res.json(try json.serialize(allocator, SchemaResponse{ .success = false, .@"error" = "Unknown schema action" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = false, .@"error" = "Unknown schema action" }, .{ .emit_null_optional_fields = false }));
         return;
     }
 
-    try res.json(try json.serialize(allocator, SchemaResponse{ .success = true }));
+    try res.json(try std.json.Stringify.valueAlloc(allocator, SchemaResponse{ .success = true }, .{ .emit_null_optional_fields = false }));
 }
 
 fn parseFieldType(s: []const u8) proto.FieldType {

@@ -11,7 +11,6 @@ const WbStorage = @import("../tasks/storage.zig").WbStorage;
 const planck = @import("planck");
 const service_manager_mod = @import("../tasks/service_manager.zig");
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 pub const MonitorParams = struct {
     service: ?[]const u8 = null,
@@ -33,17 +32,17 @@ pub fn handleMonitor(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *c
         }
     }
     const service_name = resolved_service orelse {
-        try res.json(try json.serialize(allocator, MonitorResponse{ .success = true }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, MonitorResponse{ .success = true }, .{ .emit_null_optional_fields = false }));
         return;
     };
 
     if (services.deploying) {
-        try res.json(try json.serialize(allocator, MonitorResponse{ .success = true }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, MonitorResponse{ .success = true }, .{ .emit_null_optional_fields = false }));
         return;
     }
 
     const conn = services.pool.acquire(service_name) catch {
-        try res.json(try json.serialize(allocator, MonitorResponse{ .success = true }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, MonitorResponse{ .success = true }, .{ .emit_null_optional_fields = false }));
         return;
     };
     var broken = false;
@@ -136,7 +135,7 @@ pub fn handleMonitor(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *c
     defer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, "{\"success\":true,\"history\":");
-    const history_json = try json.serialize(allocator, history.items);
+    const history_json = try std.json.Stringify.valueAlloc(allocator, history.items, .{ .emit_null_optional_fields = false });
     defer allocator.free(history_json);
     try buf.appendSlice(allocator, history_json);
 
@@ -220,7 +219,7 @@ pub fn handleStats(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *con
         }
     }
 
-    const out = try json.serialize(allocator, StatsResponse{ .success = true, .snapshots = snapshots.items });
+    const out = try std.json.Stringify.valueAlloc(allocator, StatsResponse{ .success = true, .snapshots = snapshots.items }, .{ .emit_null_optional_fields = false });
     try res.json(out);
 }
 
@@ -229,24 +228,24 @@ pub fn handleGc(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const 
     const body = try req.getBody(allocator, GcRequest);
 
     const service_name = body.service orelse {
-        try res.json(try json.serialize(allocator, GcResponse{ .success = false, .@"error" = "Service is required" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, GcResponse{ .success = false, .@"error" = "Service is required" }, .{ .emit_null_optional_fields = false }));
         return;
     };
     if (body.vlogs.len == 0) {
-        try res.json(try json.serialize(allocator, GcResponse{ .success = false, .@"error" = "Vlog IDs required" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, GcResponse{ .success = false, .@"error" = "Vlog IDs required" }, .{ .emit_null_optional_fields = false }));
         return;
     }
 
     const conn = ctx.services.pool.acquire(service_name) catch {
-        try res.json(try json.serialize(allocator, GcResponse{ .success = false, .@"error" = "Not connected" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, GcResponse{ .success = false, .@"error" = "Not connected" }, .{ .emit_null_optional_fields = false }));
         return;
     };
     defer ctx.services.pool.release(service_name, false);
 
     _ = conn.client.adminCollect(body.vlogs) catch {
-        try res.json(try json.serialize(allocator, GcResponse{ .success = false, .@"error" = "GC failed" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, GcResponse{ .success = false, .@"error" = "GC failed" }, .{ .emit_null_optional_fields = false }));
         return;
     };
 
-    try res.json(try json.serialize(allocator, GcResponse{ .success = true }));
+    try res.json(try std.json.Stringify.valueAlloc(allocator, GcResponse{ .success = true }, .{ .emit_null_optional_fields = false }));
 }

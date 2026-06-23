@@ -204,15 +204,14 @@ pub fn compareInt64Value(i64_val: i64, field_val: FieldValue, op: query_engine.O
             };
         },
         .u32_val => |expected| blk: {
-            if (i64_val < 0) break :blk false;
-            const u32_val: u32 = @intCast(i64_val);
+            const expected_i64: i64 = expected;
             break :blk switch (op) {
-                .eq => u32_val == expected,
-                .ne => u32_val != expected,
-                .gt => u32_val > expected,
-                .gte => u32_val >= expected,
-                .lt => u32_val < expected,
-                .lte => u32_val <= expected,
+                .eq => i64_val == expected_i64,
+                .ne => i64_val != expected_i64,
+                .gt => i64_val > expected_i64,
+                .gte => i64_val >= expected_i64,
+                .lt => i64_val < expected_i64,
+                .lte => i64_val <= expected_i64,
                 else => false,
             };
         },
@@ -272,12 +271,11 @@ pub fn compareJsonValue(json_val: std.json.Value, field_val: FieldValue, op: Com
         },
         .u32_val => |u| blk: {
             if (json_val != .integer) break :blk false;
-            if (json_val.integer < 0) break :blk false;
-            const ju: u32 = @intCast(json_val.integer);
+            const e: i64 = u;
             break :blk switch (op) {
-                .eq => ju == u,
-                .gt => ju > u,
-                .lt => ju < u,
+                .eq => json_val.integer == e,
+                .gt => json_val.integer > e,
+                .lt => json_val.integer < e,
             };
         },
         .bool_val => |b| blk: {

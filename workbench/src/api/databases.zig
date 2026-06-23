@@ -3,7 +3,6 @@ const schnell = @import("schnell");
 const types = @import("../model/types.zig");
 const ListDatabasesResponse = @import("../model/responses/databases.zig").ListDatabasesResponse;
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const schnell.Request, res: *schnell.Response) anyerror!void {
     const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr orelse return error.NoContext));
@@ -24,6 +23,6 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const schn
         });
     }
 
-    const body = try json.serialize(allocator, db_list.items);
+    const body = try std.json.Stringify.valueAlloc(allocator, db_list.items, .{ .emit_null_optional_fields = false });
     try res.json(body);
 }

@@ -5,7 +5,6 @@ const Dir = Io.Dir;
 const schnell = @import("schnell");
 const AppServices = @import("../tasks/services.zig").AppServices;
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 pub const LogsParams = struct {
     app: ?[]const u8 = null,
@@ -61,7 +60,7 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: Allocator, req: *const schnell.Re
         std.mem.indexOfScalar(u8, filename, '\\') != null or
         std.mem.eql(u8, filename, ".."))
     {
-        try res.json(try json.serialize(allocator, LogsResponse{ .success = false, .@"error" = "Invalid filename" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, LogsResponse{ .success = false, .@"error" = "Invalid filename" }, .{ .emit_null_optional_fields = false }));
         return;
     }
 
@@ -106,15 +105,15 @@ fn listAppsAndServices(services: *AppServices, allocator: Allocator) ![]const u8
         });
     }
 
-    return json.serialize(allocator, LogsResponse{
+    return std.json.Stringify.valueAlloc(allocator, LogsResponse{
         .success = true,
         .apps = apps.items,
-    });
+    }, .{ .emit_null_optional_fields = false });
 }
 
 fn listLogFiles(services: *AppServices, allocator: Allocator, service_name: []const u8) ![]const u8 {
     const svc_dir_path = getServiceDir(services, allocator, service_name) orelse {
-        return json.serialize(allocator, LogsResponse{ .success = false, .@"error" = "Service not found" });
+        return std.json.Stringify.valueAlloc(allocator, LogsResponse{ .success = false, .@"error" = "Service not found" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(svc_dir_path);
 
@@ -124,7 +123,7 @@ fn listLogFiles(services: *AppServices, allocator: Allocator, service_name: []co
     const io = services.io;
 
     var dir = Dir.openDir(.cwd(), io, svc_dir_path, .{ .iterate = true }) catch {
-        return json.serialize(allocator, LogsResponse{ .success = true, .files = &.{} });
+        return std.json.Stringify.valueAlloc(allocator, LogsResponse{ .success = true, .files = &.{} }, .{ .emit_null_optional_fields = false });
     };
     defer dir.close(io);
 
@@ -141,10 +140,10 @@ fn listLogFiles(services: *AppServices, allocator: Allocator, service_name: []co
         });
     }
 
-    return json.serialize(allocator, LogsResponse{
+    return std.json.Stringify.valueAlloc(allocator, LogsResponse{
         .success = true,
         .files = files.items,
-    });
+    }, .{ .emit_null_optional_fields = false });
 }
 
 fn forEachLine(
@@ -170,7 +169,7 @@ fn readLogFile(services: *AppServices, allocator: Allocator, service_name: []con
 
     const io = services.io;
     const content = Dir.readFileAlloc(.cwd(), io, file_path, allocator, .unlimited) catch {
-        return json.serialize(allocator, LogsResponse{ .success = false, .@"error" = "File not found" });
+        return std.json.Stringify.valueAlloc(allocator, LogsResponse{ .success = false, .@"error" = "File not found" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(content);
 
@@ -185,11 +184,11 @@ fn readLogFile(services: *AppServices, allocator: Allocator, service_name: []con
     };
     try forEachLine(content, &ctx, ReadLineCtx.onLine);
 
-    return json.serialize(allocator, LogsResponse{
+    return std.json.Stringify.valueAlloc(allocator, LogsResponse{
         .success = true,
         .content = result.items,
         .total_lines = ctx.line_num,
-    });
+    }, .{ .emit_null_optional_fields = false });
 }
 
 const ReadLineCtx = struct {
@@ -217,7 +216,7 @@ fn searchLogFile(services: *AppServices, allocator: Allocator, service_name: []c
 
     const io = services.io;
     const content = Dir.readFileAlloc(.cwd(), io, file_path, allocator, .unlimited) catch {
-        return json.serialize(allocator, LogsResponse{ .success = false, .@"error" = "File not found" });
+        return std.json.Stringify.valueAlloc(allocator, LogsResponse{ .success = false, .@"error" = "File not found" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(content);
 
@@ -231,11 +230,11 @@ fn searchLogFile(services: *AppServices, allocator: Allocator, service_name: []c
     };
     try forEachLine(content, &ctx, SearchLineCtx.onLine);
 
-    return json.serialize(allocator, LogsResponse{
+    return std.json.Stringify.valueAlloc(allocator, LogsResponse{
         .success = true,
         .content = result.items,
         .total_lines = ctx.matches,
-    });
+    }, .{ .emit_null_optional_fields = false });
 }
 
 const SearchLineCtx = struct {

@@ -3,7 +3,6 @@ const Allocator = std.mem.Allocator;
 const bson = @import("bson");
 const schnell = @import("schnell");
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 pub const AppLifecycleRequest = struct {
     action: []const u8 = "",
@@ -23,32 +22,32 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: Allocator, req: *const schnell.Re
     const body = try req.getBody(allocator, AppLifecycleRequest);
 
     if (body.app.len == 0) {
-        try res.json(try json.serialize(allocator, AppLifecycleResponse{ .success = false, .@"error" = "App name is required" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, AppLifecycleResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false }));
         return;
     }
 
     const mgr = ctx.services.app_manager orelse {
-        try res.json(try json.serialize(allocator, AppLifecycleResponse{ .success = false, .@"error" = "App manager not initialized" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, AppLifecycleResponse{ .success = false, .@"error" = "App manager not initialized" }, .{ .emit_null_optional_fields = false }));
         return;
     };
 
     if (std.mem.eql(u8, body.action, "start")) {
         mgr.start(body.app) catch |err| {
-            try res.json(try json.serialize(allocator, AppLifecycleResponse{ .success = false, .@"error" = @errorName(err) }));
+            try res.json(try std.json.Stringify.valueAlloc(allocator, AppLifecycleResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false }));
             return;
         };
     } else if (std.mem.eql(u8, body.action, "stop")) {
         mgr.stop(body.app) catch |err| {
-            try res.json(try json.serialize(allocator, AppLifecycleResponse{ .success = false, .@"error" = @errorName(err) }));
+            try res.json(try std.json.Stringify.valueAlloc(allocator, AppLifecycleResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false }));
             return;
         };
     } else if (std.mem.eql(u8, body.action, "restart")) {
         mgr.restart(body.app) catch |err| {
-            try res.json(try json.serialize(allocator, AppLifecycleResponse{ .success = false, .@"error" = @errorName(err) }));
+            try res.json(try std.json.Stringify.valueAlloc(allocator, AppLifecycleResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false }));
             return;
         };
     } else {
-        try res.json(try json.serialize(allocator, AppLifecycleResponse{ .success = false, .@"error" = "Unknown action. Use: start, stop, restart" }));
+        try res.json(try std.json.Stringify.valueAlloc(allocator, AppLifecycleResponse{ .success = false, .@"error" = "Unknown action. Use: start, stop, restart" }, .{ .emit_null_optional_fields = false }));
         return;
     }
 
@@ -64,10 +63,10 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: Allocator, req: *const schnell.Re
         }
     }
     const st = mgr.status(body.app, kind);
-    try res.json(try json.serialize(allocator, AppLifecycleResponse{
+    try res.json(try std.json.Stringify.valueAlloc(allocator, AppLifecycleResponse{
         .success = true,
         .status = st.state,
         .port = if (st.port > 0) st.port else null,
         .pid = if (st.pid) |p| @intCast(p) else null,
-    }));
+    }, .{ .emit_null_optional_fields = false }));
 }

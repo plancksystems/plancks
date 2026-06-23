@@ -72,6 +72,22 @@ pub fn LruCache(comptime K: type, comptime V: type) type {
             return null;
         }
 
+        pub fn getCopy(self: *Self, key: K) !?V {
+            self.mutex.lock(self.io);
+            defer self.mutex.unlock(self.io);
+
+            if (self.map.get(key)) |node| {
+                self.hits += 1;
+                self.moveToFront(node);
+                if (@typeInfo(V) == .pointer and @typeInfo(V).pointer.size == .slice) {
+                    return try self.allocator.dupe(@typeInfo(V).pointer.child, node.value);
+                }
+                return node.value;
+            }
+            self.misses += 1;
+            return null;
+        }
+
         pub fn put(self: *Self, key: K, value: V) !void {
             self.mutex.lock(self.io);
             defer self.mutex.unlock(self.io);

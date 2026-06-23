@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
     });
     wasm.entry = .disabled;
     wasm.rdynamic = true;
+    wasm.max_memory = 256 * 1024 * 1024;
     const wasm_install = b.addInstallArtifact(wasm, .{
         .dest_dir = .{ .override = .{ .custom = "wasm" } },
     });

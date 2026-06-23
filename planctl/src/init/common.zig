@@ -89,10 +89,6 @@ pub fn writeServiceManifest(allocator: std.mem.Allocator, dir: std.Io.Dir, io: s
         \\primary: true
         \\max_sessions: 128
         \\port: 0
-        \\tls:
-        \\  enabled: false
-        \\  cert_file: ""
-        \\  key_file: ""
         \\session:
         \\  idle_timeout_ms: 604800000
         \\buffers:
@@ -143,21 +139,27 @@ pub fn writeServiceManifest(allocator: std.mem.Allocator, dir: std.Io.Dir, io: s
     const svc_content = try std.fmt.allocPrint(allocator,
         \\name: {s}
         \\
+        \\tls:
+        \\  enabled: false
+        \\  cert_file: ""
+        \\  key_file: ""
+        \\
+        \\http:
+        \\  host: "0.0.0.0"
+        \\  port: 0
+        \\  max_connections: 10000
+        \\  max_header_size: 8192
+        \\  max_body_size: 1048576
+        \\  response_buffer_size: 65536
+        \\  idle_timeout_ms: 30000
+        \\  max_requests_per_connection: 10000
+        \\  drain_timeout_ms: 5000
+        \\
         \\wasm:
         \\  enabled: true
         \\  min_instances: 2
         \\  max_instances: 8
         \\  autoscale: false
-        \\  http:
-        \\    host: "0.0.0.0"
-        \\    port: 0
-        \\    max_connections: 10000
-        \\    max_header_size: 8192
-        \\    max_body_size: 1048576
-        \\    response_buffer_size: 65536
-        \\    idle_timeout_ms: 30000
-        \\    max_requests_per_connection: 10000
-        \\    drain_timeout_ms: 5000
         \\
     , .{name});
     defer allocator.free(svc_content);

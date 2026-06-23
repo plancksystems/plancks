@@ -2,22 +2,28 @@
 name: pizzaqsr-hda-mono
 description: "Pizzaqsr — HDA monolith sample (Datastar   planck/db WASM)"
 
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+
+http:
+  host: "127.0.0.1"
+  port: 3010
+  max_connections: 10000
+  max_header_size: 8192
+  max_body_size: 1048576
+  response_buffer_size: 65536
+  idle_timeout_ms: 30000
+  max_requests_per_connection: 10000
+  drain_timeout_ms: 5000
+  static_dir: "../../public"
+
 wasm:
   enabled: false
   min_instances: 2
   max_instances: 8
   autoscale: false
-  http:
-    host: "127.0.0.1"
-    port: 3010
-    max_connections: 10000
-    max_header_size: 8192
-    max_body_size: 1048576
-    response_buffer_size: 65536
-    idle_timeout_ms: 30000
-    max_requests_per_connection: 10000
-    drain_timeout_ms: 5000
-    static_dir: "../../public"
 
 upstreams:
   - name: google_oauth

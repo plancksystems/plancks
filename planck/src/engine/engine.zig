@@ -80,6 +80,9 @@ pub const Engine = struct {
         errdefer allocator.destroy(engine);
 
         try setupDirs(config, io);
+        if (Db.repairInterruptedGc(allocator, config.paths.vlog, config.paths.index, io)) |recovered| {
+            if (recovered > 0) log.warn("recovered {d} interrupted GC swap(s) on startup", .{recovered});
+        } else |err| log.warn("GC repair on startup failed: {}", .{err});
         const engine_metrics = try EngineMetrics.init(allocator);
         errdefer engine_metrics.deinit(allocator);
 
@@ -99,6 +102,7 @@ pub const Engine = struct {
             .max_file_size = config.file_sizes.wal,
             .flush_interval_in_ms = config.durability.flush_interval_in_ms,
             .max_buffer_size = config.buffers.wal,
+            .skip_buffers = config.durability.flush_interval_in_ms == 0,
             .io = io,
             .log_archive_enabled = config.durability.log_archive.enabled,
             .log_archive_dest_path = config.durability.log_archive.dest_path,
@@ -192,7 +196,9 @@ pub const Engine = struct {
             .timestamp = self.now.toMilliSeconds(),
             .kind = .sequence,
         }) catch |e| {
-            log.warn("Sequence WAL append failed for '{s}': {}", .{ name, e });
+            result.value_ptr.* -= 1;
+            log.err("Sequence WAL append failed for '{s}': {}", .{ name, e });
+            return error.SequenceFailed;
         };
 
         return new_val;
@@ -570,8 +576,8 @@ pub const Engine = struct {
 
     pub fn get(self: *Engine, key: u128) ![]const u8 {
         if (self.read_cache) |cache| {
-            if (cache.get(key)) |cached_value| {
-                return cached_value;
+            if (try cache.getCopy(key)) |cached_copy| {
+                return cached_copy;
             }
         }
 
@@ -580,8 +586,8 @@ pub const Engine = struct {
         const value = try self.db.get(key);
 
         if (self.read_cache) |cache| {
-            const cached = try self.allocator.dupe(u8, value);
-            cache.put(key, cached) catch {};
+            const cached = self.allocator.dupe(u8, value) catch return value;
+            cache.put(key, cached) catch self.allocator.free(cached);
         }
 
         return value;
@@ -1124,17 +1130,21 @@ pub const Engine = struct {
         self.primary_index_mutex.lock(self.io);
         defer self.primary_index_mutex.unlock(self.io);
 
-        var it = try self.primary_index.prefetchIterator();
+        var sk_buf: [16]u8 = undefined;
+        var ek_buf: [16]u8 = undefined;
+        std.mem.writeInt(u128, &sk_buf, start_key, .big);
+        std.mem.writeInt(u128, &ek_buf, end_key, .big);
+
+        var it = try self.primary_index.tree.rangeScan(&sk_buf, &ek_buf);
         defer it.deinit();
 
         var count: u32 = 0;
 
         while (try it.next()) |cell| {
             if (count >= actual_limit) break;
+            if (cell.key.len < 16) continue;
 
-            const key = std.mem.readInt(u128, cell.key[0..@sizeOf(u128)], .little);
-
-            if (key < start_key or key > end_key) continue;
+            const key = std.mem.readInt(u128, cell.key[0..16], .big);
 
             self.db_mutex.lock(self.io);
             const value = self.db.get(@bitCast(key)) catch |err| {
@@ -1182,44 +1192,24 @@ pub const Engine = struct {
             self.primary_index_mutex.lock(self.io);
             defer self.primary_index_mutex.unlock(self.io);
 
-            var it = try self.primary_index.prefetchIterator();
+            const range = KeyGen.storeKeyRange(store_id);
+            var sk_buf: [16]u8 = undefined;
+            var ek_buf: [16]u8 = undefined;
+            std.mem.writeInt(u128, &sk_buf, range.min, .big);
+            std.mem.writeInt(u128, &ek_buf, range.max, .big);
+
+            var it = try self.primary_index.tree.rangeScan(&sk_buf, &ek_buf);
             defer it.deinit();
 
             var count: u32 = 0;
             var skipped: u32 = 0;
-            var seen_target_store = false;
-            var total_scanned: u32 = 0;
-
-            const reasonable_max = (actual_offset + actual_limit) * 10;
-            const MAX_SCAN_KEYS: u32 = @min(reasonable_max, 50_000);
-
             while (try it.next()) |cell| {
-                total_scanned += 1;
-
-                if (total_scanned >= MAX_SCAN_KEYS) {
-                    break;
-                }
-
                 if (count >= actual_limit) break;
+                if (cell.key.len < 16) continue;
 
-                const key = std.mem.readInt(u128, cell.key[0..@sizeOf(u128)], .little);
-
-                const key_store_id: u16 = @truncate((key >> 112) & 0xFFFF);
-
-                if (seen_target_store and key_store_id != store_id) {
-                    break;
-                }
-
-                if (!seen_target_store and key_store_id > store_id) {
-                    break;
-                }
-
-                if (key_store_id != store_id) continue;
-
-                seen_target_store = true;
+                const key = std.mem.readInt(u128, cell.key[0..16], .big);
 
                 const doc_type: u8 = @truncate((key >> 104) & 0xFF);
-
                 if (doc_type != 4) continue;
 
                 if (skipped < actual_offset) {

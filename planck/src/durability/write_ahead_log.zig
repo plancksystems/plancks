@@ -285,7 +285,7 @@ pub const WriteAheadLog = struct {
         if (self.current_file) |file| {
             self.header.write(self.io, file) catch |err| {
                 file.close(self.io);
-                std.debug.print("Failed to write WAL header during rotation: {s}\n", .{@errorName(err)});
+                log.err("Failed to write WAL header during rotation: {s}", .{@errorName(err)});
                 return WalError.FailedToWriteHeader;
             };
             file.close(self.io);
@@ -304,7 +304,7 @@ pub const WriteAheadLog = struct {
             self.header.update();
             self.header.write(self.io, file) catch |err| {
                 file.close(self.io);
-                std.debug.print("Failed to write WAL header during rotation: {s}\n", .{@errorName(err)});
+                log.err("Failed to write WAL header during rotation: {s}", .{@errorName(err)});
                 return WalError.FailedToWriteHeader;
             };
         }
@@ -430,12 +430,21 @@ pub const WriteAheadLog = struct {
             };
 
             var reader = BufferReader{ .buffer = content[offset..], .pos = 0 };
-            const record_result = LogRecord.deserialize(allocator, &reader) catch |err| {
-                if (err == error.InvalidRecordLength or err == error.ChecksumMismatch) {
-                    std.debug.print("Replay Failed: {s}", .{@errorName(err)});
+            const record_result = LogRecord.deserialize(allocator, &reader) catch |err| switch (err) {
+                // Payload corrupt but the length prefix already validated, so skip exactly
+                // this record and keep recovering the valid ones after it.
+                error.ChecksumMismatch => {
+                    const payload_len = std.mem.readInt(u32, content[offset..][0..4], .little);
+                    log.warn("WAL replay: skipping checksum-corrupt record at offset {d}", .{offset});
+                    offset += @sizeOf(u32) + payload_len;
+                    continue;
+                },
+                // Truncated/torn framing — can't locate the next record; stop here.
+                error.InvalidRecordLength, error.RecordTooLarge => {
+                    log.warn("WAL replay stopped at torn record: {s}", .{@errorName(err)});
                     break;
-                }
-                return err;
+                },
+                else => return err,
             };
             if (record_result) |record| {
                 try list.append(allocator, record);

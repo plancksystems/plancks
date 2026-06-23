@@ -122,9 +122,10 @@ pub fn add(
         \\Added service '{s}' to services/{s}/ ({d} files, arch={s}, dev_port={d}).
         \\
         \\Before deploying:
-        \\  - Set `port:` and `wasm.http.port:` in services/{s}/db.yaml
-        \\    (template ships with `port: 0` per the manual-port rule —
-        \\    pick unique values; the workbench validator refuses zero).
+        \\  - Set `port:` in services/{s}/db.yaml and `http.port:` in
+        \\    services/{s}/service.yaml (templates ship with `port: 0` per
+        \\    the manual-port rule — pick unique values; the validator
+        \\    refuses zero).
         \\  - The dev_port above is the local native binary's port only
         \\    (used by `zig build run` in services/{s}/). The deployed
         \\    planck/db reads `db.yaml` and binds whatever you set there.
@@ -133,7 +134,7 @@ pub fn add(
         \\  cd services/{s} && zig build dev-build
         \\  cd - && ./dev.sh         # start the stack
         \\
-    , .{ service_name, service_name, written, @tagName(arch), port, service_name, service_name, service_name });
+    , .{ service_name, service_name, written, @tagName(arch), port, service_name, service_name, service_name, service_name });
 }
 
 

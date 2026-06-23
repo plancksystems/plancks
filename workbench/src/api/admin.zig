@@ -9,7 +9,6 @@ const paths_mod = @import("../tasks/paths.zig");
 const WbStorage = @import("../tasks/storage.zig").WbStorage;
 const planck = @import("planck");
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 const utils = @import("utils");
 const backup_orch = @import("../tasks/backup_orch.zig");
 const Io = std.Io;
@@ -53,9 +52,9 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const sc
     else if (std.mem.eql(u8, body.action, "set-mode") or
         std.mem.eql(u8, body.action, "promote") or
         std.mem.eql(u8, body.action, "demote"))
-        try json.serialize(allocator, AdminResponse{ .success = true })
+        try std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false })
     else
-        try json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Unknown admin action" });
+        try std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Unknown admin action" }, .{ .emit_null_optional_fields = false });
 
     try res.json(out);
 }
@@ -67,9 +66,9 @@ fn acquireConn(services: *AppServices, allocator: std.mem.Allocator, body: *cons
     err: []const u8,
 } {
     const service_name = body.service orelse
-        return .{ .err = try json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Service is required" }) };
+        return .{ .err = try std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Service is required" }, .{ .emit_null_optional_fields = false }) };
     const conn = services.pool.acquire(service_name) catch
-        return .{ .err = try json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Not connected" }) };
+        return .{ .err = try std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Not connected" }, .{ .emit_null_optional_fields = false }) };
     return .{ .ok = .{ .conn = conn, .service = service_name } };
 }
 
@@ -81,14 +80,14 @@ fn listUsers(services: *AppServices, allocator: std.mem.Allocator, body: *const 
     const conn = acq.conn;
     defer services.pool.release(acq.service, false);
     const data = conn.client.list(.User, null) catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to list users" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to list users" }, .{ .emit_null_optional_fields = false });
     };
     const json_str = planck.bson.toJsonArray(allocator, data) catch "[]";
-    return json.serialize(allocator, AdminResponse{ .success = true, .data = json_str });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true, .data = json_str }, .{ .emit_null_optional_fields = false });
 }
 
 fn createUser(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    if (body.username.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Username is required" });
+    if (body.username.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Username is required" }, .{ .emit_null_optional_fields = false });
 
     const acq = switch (try acquireConn(services, allocator, body)) {
         .ok => |a| a,
@@ -101,16 +100,16 @@ fn createUser(services: *AppServices, allocator: std.mem.Allocator, body: *const
 
     const key = if (body.key.len > 0)
         conn.client.adminCreateUserWithKey(body.username, role, body.key) catch {
-            return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to create user" });
+            return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to create user" }, .{ .emit_null_optional_fields = false });
         }
     else
         conn.client.adminCreateUser(body.username, role) catch {
-            return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to create user" });
+            return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to create user" }, .{ .emit_null_optional_fields = false });
         };
     defer allocator.free(key);
 
     log.info("created user '{s}'", .{body.username});
-    return json.serialize(allocator, AdminResponse{ .success = true, .key = key });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true, .key = key }, .{ .emit_null_optional_fields = false });
 }
 
 fn deleteUser(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
@@ -121,14 +120,14 @@ fn deleteUser(services: *AppServices, allocator: std.mem.Allocator, body: *const
     const conn = acq.conn;
     defer services.pool.release(acq.service, false);
     conn.client.drop(.User, body.username) catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to delete user" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to delete user" }, .{ .emit_null_optional_fields = false });
     };
-    return json.serialize(allocator, AdminResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn updateUser(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    if (body.username.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Username is required" });
-    if (body.role.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Role is required" });
+    if (body.username.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Username is required" }, .{ .emit_null_optional_fields = false });
+    if (body.role.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Role is required" }, .{ .emit_null_optional_fields = false });
 
     const acq = switch (try acquireConn(services, allocator, body)) {
         .ok => |a| a,
@@ -138,18 +137,18 @@ fn updateUser(services: *AppServices, allocator: std.mem.Allocator, body: *const
     defer services.pool.release(acq.service, false);
 
     const role = std.fmt.parseInt(u8, body.role, 10) catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Invalid role" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Invalid role" }, .{ .emit_null_optional_fields = false });
     };
 
     conn.client.adminUpdateUser(body.username, role) catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to update user" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to update user" }, .{ .emit_null_optional_fields = false });
     };
 
-    return json.serialize(allocator, AdminResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn regenerateKey(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    if (body.username.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Username is required" });
+    if (body.username.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Username is required" }, .{ .emit_null_optional_fields = false });
 
     const acq = switch (try acquireConn(services, allocator, body)) {
         .ok => |a| a,
@@ -159,11 +158,11 @@ fn regenerateKey(services: *AppServices, allocator: std.mem.Allocator, body: *co
     defer services.pool.release(acq.service, false);
 
     const key = conn.client.adminRegenerateKey(body.username) catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to regenerate key" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to regenerate key" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(key);
 
-    return json.serialize(allocator, AdminResponse{ .success = true, .key = key });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true, .key = key }, .{ .emit_null_optional_fields = false });
 }
 
 fn getConfig(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
@@ -174,13 +173,13 @@ fn getConfig(services: *AppServices, allocator: std.mem.Allocator, body: *const 
     const conn = acq.conn;
     defer services.pool.release(acq.service, false);
     const config_bson = conn.client.adminGetConfig() catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to get config" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to get config" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(config_bson);
     const config_json = planck.bson.toJson(allocator, config_bson) catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to parse config" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to parse config" }, .{ .emit_null_optional_fields = false });
     };
-    return json.serialize(allocator, AdminResponse{ .success = true, .data = config_json });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true, .data = config_json }, .{ .emit_null_optional_fields = false });
 }
 
 fn setConfig(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
@@ -191,9 +190,9 @@ fn setConfig(services: *AppServices, allocator: std.mem.Allocator, body: *const 
     const conn = acq.conn;
     defer services.pool.release(acq.service, false);
     conn.client.adminSetConfig(body.config) catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to set config" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to set config" }, .{ .emit_null_optional_fields = false });
     };
-    return json.serialize(allocator, AdminResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn createBackup(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
@@ -202,10 +201,10 @@ fn createBackup(services: *AppServices, allocator: std.mem.Allocator, body: *con
     defer if (resolved_app) |s| allocator.free(s);
 
     if (app_name.len == 0) {
-        const svc = body.service orelse return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" });
-        if (svc.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" });
+        const svc = body.service orelse return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
+        if (svc.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
         const found = (findAppForService(services, allocator, svc) catch null) orelse {
-            return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "App not found for service" });
+            return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "App not found for service" }, .{ .emit_null_optional_fields = false });
         };
         resolved_app = found;
         app_name = found;
@@ -213,12 +212,12 @@ fn createBackup(services: *AppServices, allocator: std.mem.Allocator, body: *con
 
     const result = backup_orch.backupApp(services, allocator, app_name, body.backup_path, .manual) catch |err| {
         log.err("createBackup '{s}' failed: {}", .{ app_name, err });
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = @errorName(err) });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(result.output_path);
     const reply = try std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\",\"bytes\":{d},\"services\":{d}}}", .{ result.output_path, result.bytes, result.services_captured });
     defer allocator.free(reply);
-    return json.serialize(allocator, AdminResponse{ .success = true, .data = reply });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true, .data = reply }, .{ .emit_null_optional_fields = false });
 }
 
 fn findAppForService(services: *AppServices, allocator: std.mem.Allocator, service_name: []const u8) !?[]u8 {
@@ -251,7 +250,7 @@ fn findAppForService(services: *AppServices, allocator: std.mem.Allocator, servi
 }
 
 fn listBackups(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    const storage = services.storage orelse return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Sysdb storage unavailable" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Sysdb storage unavailable" }, .{ .emit_null_optional_fields = false });
 
     const docs = if (body.app.len > 0)
         try storage.listByField(WbStorage.STORE_BACKUPS, "app", body.app)
@@ -274,47 +273,47 @@ fn listBackups(services: *AppServices, allocator: std.mem.Allocator, body: *cons
 
     const out = try allocator.dupe(u8, buf.written());
     defer allocator.free(out);
-    return json.serialize(allocator, AdminResponse{ .success = true, .data = out });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true, .data = out }, .{ .emit_null_optional_fields = false });
 }
 
 fn deleteBackup(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    if (body.backup_path.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "backup_path is required" });
-    const storage = services.storage orelse return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Sysdb storage unavailable" });
+    if (body.backup_path.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "backup_path is required" }, .{ .emit_null_optional_fields = false });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Sysdb storage unavailable" }, .{ .emit_null_optional_fields = false });
 
     const found = (storage.findByField(WbStorage.STORE_BACKUPS, "backup_path", body.backup_path) catch null) orelse {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Backup not found in sysdb" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Backup not found in sysdb" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(found.value);
 
     storage.delete(WbStorage.STORE_BACKUPS, found.key) catch {};
     storage.flush();
     Dir.cwd().deleteFile(services.io, body.backup_path) catch {};
-    return json.serialize(allocator, AdminResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn verifyBackup(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    if (body.backup_path.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "backup_path is required" });
+    if (body.backup_path.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "backup_path is required" }, .{ .emit_null_optional_fields = false });
     _ = services;
     var file = Dir.openFile(.cwd(), undefined, body.backup_path, .{ .mode = .read_only }) catch {
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Backup file not readable" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Backup file not readable" }, .{ .emit_null_optional_fields = false });
     };
     file.close(undefined);
-    return json.serialize(allocator, AdminResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn registerAppShell(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    if (body.app.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" });
-    const mgr = services.app_manager orelse return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "AppManager not initialized" });
+    if (body.app.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
+    const mgr = services.app_manager orelse return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "AppManager not initialized" }, .{ .emit_null_optional_fields = false });
     mgr.registerAppFromRestore(body.app) catch |err| {
         log.err("register-app-shell '{s}' failed: {}", .{ body.app, err });
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = @errorName(err) });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
     };
-    return json.serialize(allocator, AdminResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn ensureBackupSchedule(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    if (body.app.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" });
-    const storage = services.storage orelse return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Storage not initialized" });
+    if (body.app.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
 
     const existing = storage.list(WbStorage.STORE_SCHEDULES) catch null;
     if (existing) |docs| {
@@ -327,7 +326,7 @@ fn ensureBackupSchedule(services: *AppServices, allocator: std.mem.Allocator, bo
             const app_field = (d.getString("app") catch null) orelse "";
             const svc_field = (d.getString("service") catch null) orelse "";
             if (std.mem.eql(u8, app_field, body.app) or std.mem.eql(u8, svc_field, body.app)) {
-                return json.serialize(allocator, AdminResponse{ .success = true });
+                return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
             }
         }
     }
@@ -348,17 +347,17 @@ fn ensureBackupSchedule(services: *AppServices, allocator: std.mem.Allocator, bo
 
     _ = storage.put(WbStorage.STORE_SCHEDULES, doc.toBytes()) catch |err| {
         log.err("ensure-backup-schedule '{s}' put failed: {}", .{ body.app, err });
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = @errorName(err) });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
     };
     storage.flush();
     log.info("ensure-backup-schedule: created '{s}-backup' (daily 02:00)", .{body.app});
-    return json.serialize(allocator, AdminResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn ensureFromRestore(services: *AppServices, allocator: std.mem.Allocator, body: *const AdminRequest) ![]const u8 {
-    if (body.app.len == 0) return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" });
-    const service_name = body.service orelse return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Service is required" });
-    const storage = services.storage orelse return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Sysdb storage unavailable" });
+    if (body.app.len == 0) return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
+    const service_name = body.service orelse return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Service is required" }, .{ .emit_null_optional_fields = false });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Sysdb storage unavailable" }, .{ .emit_null_optional_fields = false });
 
     const app_dir = try std.fmt.allocPrint(allocator, "{s}/apps/{s}", .{ services.wb_config.data_dir, body.app });
     defer allocator.free(app_dir);
@@ -367,7 +366,7 @@ fn ensureFromRestore(services: *AppServices, allocator: std.mem.Allocator, body:
     } else {
         _ = storage.putApp(body.app, "", app_dir, "shell") catch |err| {
             log.warn("ensure-from-restore: putApp '{s}': {}", .{ body.app, err });
-            return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to register app" });
+            return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to register app" }, .{ .emit_null_optional_fields = false });
         };
     }
 
@@ -388,7 +387,7 @@ fn ensureFromRestore(services: *AppServices, allocator: std.mem.Allocator, body:
                 defer s.deinit();
                 if (try s.getString("name")) |n| {
                     if (std.mem.eql(u8, n, service_name)) {
-                        return json.serialize(allocator, AdminResponse{ .success = true });
+                        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
                     }
                 }
             }
@@ -409,9 +408,9 @@ fn ensureFromRestore(services: *AppServices, allocator: std.mem.Allocator, body:
 
     storage.addServiceToApp(body.app, sdoc.toBytes()) catch |err| {
         log.warn("ensure-from-restore: addServiceToApp '{s}/{s}': {}", .{ body.app, service_name, err });
-        return json.serialize(allocator, AdminResponse{ .success = false, .@"error" = "Failed to register service" });
+        return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = false, .@"error" = "Failed to register service" }, .{ .emit_null_optional_fields = false });
     };
     services.loadDeployedServices(allocator) catch {};
 
-    return json.serialize(allocator, AdminResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, AdminResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }

@@ -276,25 +276,23 @@ pub const WbStorage = struct {
         };
         const count = try services_arr.len();
 
-        const old_size = std.mem.readInt(i32, services_arr.data[0..4], .little);
-        const old_content_end = @as(usize, @intCast(old_size)) - 1;
+        // Rebuild the services array via the bson lib: existing elements + the new service.
+        var arr_doc = bson.BsonDocument.empty(self.allocator);
+        defer arr_doc.deinit();
 
-        var arr_buf: std.ArrayList(u8) = .empty;
-        defer arr_buf.deinit(self.allocator);
-
-        try arr_buf.appendSlice(self.allocator, services_arr.data[0..old_content_end]);
-
-        try arr_buf.append(self.allocator, 0x03);
-        var idx_buf: [16]u8 = undefined;
-        const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{count}) catch "0";
-        try arr_buf.appendSlice(self.allocator, idx_str);
-        try arr_buf.append(self.allocator, 0);
-        try arr_buf.appendSlice(self.allocator, service_bson);
-
-        try arr_buf.append(self.allocator, 0);
-
-        const new_size: i32 = @intCast(arr_buf.items.len);
-        @memcpy(arr_buf.items[0..4], std.mem.asBytes(&std.mem.nativeToLittle(i32, new_size)));
+        for (0..count) |i| {
+            var val = (try services_arr.get(i)) orelse continue;
+            defer val.deinit(self.allocator);
+            var idx_buf: [16]u8 = undefined;
+            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{i}) catch "0";
+            try arr_doc.put(idx_str, val);
+        }
+        {
+            const svc_doc = try bson.BsonDocument.init(self.allocator, service_bson, false);
+            var idx_buf: [16]u8 = undefined;
+            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{count}) catch "0";
+            try arr_doc.put(idx_str, .{ .document = svc_doc });
+        }
 
         const field_names = try doc.getFieldNames(self.allocator);
         defer {
@@ -308,12 +306,13 @@ pub const WbStorage = struct {
         for (field_names) |name| {
             if (std.mem.eql(u8, name, "services")) continue;
             if (try doc.getField(name)) |val| {
-                try new_doc.put(name, val);
+                var v = val;
+                defer v.deinit(self.allocator);
+                try new_doc.put(name, v);
             }
         }
 
-        const new_arr = bson.BsonArray.init(self.allocator, arr_buf.items);
-        try new_doc.putArray("services", new_arr);
+        try new_doc.putArray("services", bson.BsonArray.init(self.allocator, arr_doc.toBytes()));
 
         self.delete(STORE_APPS, found.key) catch {};
         _ = try self.put(STORE_APPS, new_doc.toBytes());
@@ -332,46 +331,31 @@ pub const WbStorage = struct {
         const count = try services_arr.len();
         if (count == 0) return;
 
-        var arr_buf: std.ArrayList(u8) = .empty;
-        defer arr_buf.deinit(self.allocator);
-
-        try arr_buf.appendSlice(self.allocator, &[_]u8{ 0, 0, 0, 0 });
+        // Rebuild the services array via the bson lib, dropping the named service.
+        var arr_doc = bson.BsonDocument.empty(self.allocator);
+        defer arr_doc.deinit();
 
         var new_idx: usize = 0;
         for (0..count) |i| {
-            const val = (try services_arr.get(i)) orelse continue;
+            var val = (try services_arr.get(i)) orelse continue;
+            defer val.deinit(self.allocator);
+
             const svc_doc_data = switch (val) {
                 .document => |d| d.data,
                 else => continue,
             };
 
-            var svc_doc = try bson.BsonDocument.init(self.allocator, svc_doc_data, false);
-            const name = (try svc_doc.getString("name")) orelse {
-                var idx_buf: [16]u8 = undefined;
-                const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{new_idx}) catch "0";
-                try arr_buf.append(self.allocator, 0x03);
-                try arr_buf.appendSlice(self.allocator, idx_str);
-                try arr_buf.append(self.allocator, 0);
-                try arr_buf.appendSlice(self.allocator, svc_doc_data);
-                new_idx += 1;
-                continue;
-            };
-
-            if (std.mem.eql(u8, name, service_name)) continue;
+            const svc_doc = try bson.BsonDocument.init(self.allocator, svc_doc_data, false);
+            if (svc_doc.getString("name") catch null) |name| {
+                defer self.allocator.free(name);
+                if (std.mem.eql(u8, name, service_name)) continue;
+            }
 
             var idx_buf: [16]u8 = undefined;
             const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{new_idx}) catch "0";
-            try arr_buf.append(self.allocator, 0x03);
-            try arr_buf.appendSlice(self.allocator, idx_str);
-            try arr_buf.append(self.allocator, 0);
-            try arr_buf.appendSlice(self.allocator, svc_doc_data);
+            try arr_doc.put(idx_str, val);
             new_idx += 1;
         }
-
-        try arr_buf.append(self.allocator, 0);
-
-        const new_size: i32 = @intCast(arr_buf.items.len);
-        @memcpy(arr_buf.items[0..4], std.mem.asBytes(&std.mem.nativeToLittle(i32, new_size)));
 
         const field_names = try doc.getFieldNames(self.allocator);
         defer {
@@ -385,12 +369,13 @@ pub const WbStorage = struct {
         for (field_names) |fname| {
             if (std.mem.eql(u8, fname, "services")) continue;
             if (try doc.getField(fname)) |val| {
-                try new_doc.put(fname, val);
+                var v = val;
+                defer v.deinit(self.allocator);
+                try new_doc.put(fname, v);
             }
         }
 
-        const new_arr = bson.BsonArray.init(self.allocator, arr_buf.items);
-        try new_doc.putArray("services", new_arr);
+        try new_doc.putArray("services", bson.BsonArray.init(self.allocator, arr_doc.toBytes()));
 
         self.delete(STORE_APPS, found.key) catch {};
         _ = try self.put(STORE_APPS, new_doc.toBytes());
@@ -490,7 +475,7 @@ pub const WbStorage = struct {
             if (doc_size < 5 or pos + doc_size > data.len) break;
 
             const doc_bytes = data[pos .. pos + doc_size];
-            const key = bsonGetKeyHex(doc_bytes) orelse 0;
+            const key = bsonGetKeyHex(allocator, doc_bytes) orelse 0;
 
             try results.append(allocator, .{
                 .key = key,
@@ -503,74 +488,77 @@ pub const WbStorage = struct {
         return results.toOwnedSlice(allocator);
     }
 
-    fn bsonGetKeyHex(data: []const u8) ?u128 {
-        if (data.len < 5) return null;
-        var pos: usize = 4;
-        while (pos < data.len - 1) {
-            const element_type = data[pos];
-            if (element_type == 0x00) break;
-            pos += 1;
-
-            const name_start = pos;
-            while (pos < data.len and data[pos] != 0) : (pos += 1) {}
-            if (pos >= data.len) return null;
-            const name = data[name_start..pos];
-            pos += 1;
-
-            if (element_type == 0x02 and std.mem.eql(u8, name, "key")) {
-                if (pos + 4 > data.len) return null;
-                const str_len = std.mem.readInt(i32, data[pos..][0..4], .little);
-                pos += 4;
-                if (str_len < 2) return null;
-                const ustr_len = @as(usize, @intCast(str_len));
-                if (pos + ustr_len > data.len) return null;
-                const hex_str = data[pos .. pos + ustr_len - 1];
-                return std.fmt.parseInt(u128, hex_str, 16) catch null;
-            }
-
-            pos = skipBsonValue(data, pos, element_type) orelse return null;
-        }
-        return null;
-    }
-
-    fn skipBsonValue(data: []const u8, pos: usize, element_type: u8) ?usize {
-        var p = pos;
-        switch (element_type) {
-            0x01 => p += 8,
-            0x02 => {
-                if (p + 4 > data.len) return null;
-                const len = std.mem.readInt(i32, data[p..][0..4], .little);
-                if (len < 0) return null;
-                const ulen = @as(usize, @intCast(len));
-                if (p + 4 + ulen > data.len) return null;
-                p += 4 + ulen;
-            },
-            0x03, 0x04 => {
-                if (p + 4 > data.len) return null;
-                const len = std.mem.readInt(i32, data[p..][0..4], .little);
-                if (len < 0) return null;
-                const ulen = @as(usize, @intCast(len));
-                if (p + ulen > data.len) return null;
-                p += ulen;
-            },
-            0x05 => {
-                if (p + 4 > data.len) return null;
-                const len = std.mem.readInt(i32, data[p..][0..4], .little);
-                if (len < 0) return null;
-                const ulen = @as(usize, @intCast(len));
-                if (p + 5 + ulen > data.len) return null;
-                p += 5 + ulen;
-            },
-            0x07 => p += 12,
-            0x08 => p += 1,
-            0x09 => p += 8,
-            0x0A => {},
-            0x10 => p += 4,
-            0x11 => p += 8,
-            0x12 => p += 8,
-            0x00 => return null,
-            else => return null,
-        }
-        return p;
+    fn bsonGetKeyHex(allocator: Allocator, data: []const u8) ?u128 {
+        const doc = planck.bson.BsonDocument.init(allocator, data, false) catch return null;
+        const hex_str = (doc.getString("key") catch null) orelse return null;
+        defer allocator.free(hex_str);
+        return std.fmt.parseInt(u128, hex_str, 16) catch null;
     }
 };
+
+fn testDocWithKey(a: Allocator, hex: []const u8) ![]const u8 {
+    var doc = planck.bson.BsonDocument.empty(a);
+    defer doc.deinit();
+    try doc.putString("key", hex);
+    return a.dupe(u8, doc.toBytes());
+}
+
+test "store namespace maps known store ids" {
+    try std.testing.expectEqualStrings("sysschedules", WbStorage.storeNs(WbStorage.STORE_SCHEDULES));
+    try std.testing.expectEqualStrings("sysstats", WbStorage.storeNs(WbStorage.STORE_STATS));
+    try std.testing.expectEqualStrings("sysapps", WbStorage.storeNs(WbStorage.STORE_APPS));
+    try std.testing.expectEqualStrings("sysbackups", WbStorage.storeNs(WbStorage.STORE_BACKUPS));
+}
+
+test "store namespace falls back to unknown" {
+    try std.testing.expectEqualStrings("unknown", WbStorage.storeNs(999));
+}
+
+test "document key is parsed from its hex string" {
+    const a = std.testing.allocator;
+    const d = try testDocWithKey(a, "1a2b");
+    defer a.free(d);
+    try std.testing.expectEqual(@as(?u128, 0x1a2b), WbStorage.bsonGetKeyHex(a, d));
+}
+
+test "document key is null when the field is absent" {
+    const a = std.testing.allocator;
+    var doc = planck.bson.BsonDocument.empty(a);
+    defer doc.deinit();
+    try doc.putString("name", "x");
+    const d = try a.dupe(u8, doc.toBytes());
+    defer a.free(d);
+    try std.testing.expect(WbStorage.bsonGetKeyHex(a, d) == null);
+}
+
+test "document key is null for malformed bytes" {
+    try std.testing.expect(WbStorage.bsonGetKeyHex(std.testing.allocator, &[_]u8{ 0, 0 }) == null);
+}
+
+test "concatenated documents are split into rows" {
+    const a = std.testing.allocator;
+    const d1 = try testDocWithKey(a, "01");
+    defer a.free(d1);
+    const d2 = try testDocWithKey(a, "02");
+    defer a.free(d2);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(a);
+    try buf.appendSlice(a, d1);
+    try buf.appendSlice(a, d2);
+
+    const docs = try WbStorage.parseDocArray(a, buf.items);
+    defer {
+        for (docs) |doc| a.free(doc.value);
+        a.free(docs);
+    }
+    try std.testing.expectEqual(@as(usize, 2), docs.len);
+    try std.testing.expectEqual(@as(u128, 1), docs[0].key);
+    try std.testing.expectEqual(@as(u128, 2), docs[1].key);
+}
+
+test "empty input yields no rows" {
+    const docs = try WbStorage.parseDocArray(std.testing.allocator, "");
+    defer std.testing.allocator.free(docs);
+    try std.testing.expectEqual(@as(usize, 0), docs.len);
+}

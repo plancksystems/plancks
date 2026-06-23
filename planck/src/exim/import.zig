@@ -266,60 +266,23 @@ pub const Importer = struct {
         const data = try self.readFile(file_path);
         defer self.allocator.free(data);
 
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{}) catch
+            return error.InvalidJsonFormat;
+        defer parsed.deinit();
+
+        const arr = switch (parsed.value) {
+            .array => |a| a,
+            else => return error.InvalidJsonFormat,
+        };
+
         var doc_count: u64 = 0;
+        for (arr.items) |elem| {
+            const obj = switch (elem) {
+                .object => |o| o,
+                else => continue,
+            };
 
-        var pos: usize = 0;
-
-        while (pos < data.len and data[pos] != '[') pos += 1;
-        if (pos >= data.len) return error.InvalidJsonFormat;
-        pos += 1;
-
-        while (pos < data.len) {
-            while (pos < data.len and (data[pos] == ' ' or data[pos] == '\n' or
-                data[pos] == '\r' or data[pos] == '\t' or data[pos] == ',')) pos += 1;
-
-            if (pos >= data.len or data[pos] == ']') break;
-
-            if (data[pos] != '{') {
-                pos += 1;
-                continue;
-            }
-
-            const obj_start = pos;
-            var depth: u32 = 0;
-            var in_string = false;
-            var escaped = false;
-
-            while (pos < data.len) {
-                const c = data[pos];
-                if (escaped) {
-                    escaped = false;
-                    pos += 1;
-                    continue;
-                }
-                if (c == '\\' and in_string) {
-                    escaped = true;
-                    pos += 1;
-                    continue;
-                }
-                if (c == '"') {
-                    in_string = !in_string;
-                } else if (!in_string) {
-                    if (c == '{') {
-                        depth += 1;
-                    } else if (c == '}') {
-                        depth -= 1;
-                        if (depth == 0) {
-                            pos += 1;
-                            break;
-                        }
-                    }
-                }
-                pos += 1;
-            }
-
-            const json_obj = data[obj_start..pos];
-            const bson_bytes = try self.jsonObjectToBson(json_obj, spec.fields);
+            const bson_bytes = try self.jsonValueToBson(obj, spec.fields);
             defer self.allocator.free(bson_bytes);
 
             _ = try self.postDocument(spec.target, bson_bytes);
@@ -772,214 +735,108 @@ pub const Importer = struct {
         }
     }
 
-    fn jsonObjectToBson(self: *Importer, json: []const u8, fields: ?[]const FieldDescriptor) ![]const u8 {
+    fn jsonValueToBson(self: *Importer, obj: std.json.ObjectMap, fields: ?[]const FieldDescriptor) ![]const u8 {
         var doc = BsonDocument.empty(self.allocator);
         defer doc.deinit();
 
-        var pos: usize = 0;
-
-        while (pos < json.len and json[pos] != '{') pos += 1;
-        if (pos >= json.len) return error.InvalidJsonFormat;
-        pos += 1;
-
-        while (pos < json.len) {
-            skipJsonWhitespace(json, &pos);
-            if (pos >= json.len or json[pos] == '}') break;
-
-            if (json[pos] == ',') {
-                pos += 1;
-                continue;
-            }
-
-            const key = try self.parseJsonString(json, &pos);
-            defer self.allocator.free(key);
-
-            skipJsonWhitespace(json, &pos);
-            if (pos >= json.len or json[pos] != ':') return error.InvalidJsonFormat;
-            pos += 1;
-            skipJsonWhitespace(json, &pos);
-
-            if (pos >= json.len) break;
-
-            const field_type: ?FieldType = if (fields) |fds| blk: {
-                for (fds) |fd| {
-                    if (std.mem.eql(u8, fd.name, key)) break :blk fd.field_type;
-                }
-                break :blk null;
-            } else null;
-
-            if (json[pos] == '"') {
-                const val = try self.parseJsonString(json, &pos);
-                defer self.allocator.free(val);
-
-                if (field_type) |ft| {
-                    switch (ft) {
-                        .int => {
-                            if (std.fmt.parseInt(i64, val, 10)) |v| {
-                                try doc.putInt64(key, v);
-                            } else |_| {
-                                try doc.putString(key, val);
-                            }
-                        },
-                        .double => {
-                            if (std.fmt.parseFloat(f64, val)) |v| {
-                                try doc.putDouble(key, v);
-                            } else |_| {
-                                try doc.putString(key, val);
-                            }
-                        },
-                        .bool => {
-                            const is_true = std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "yes");
-                            try doc.putBool(key, is_true);
-                        },
-                        .datetime => {
-                            if (datetime_mod.parseIso(val)) |epoch_ms| {
-                                try doc.putInt64(key, epoch_ms);
-                            } else |_| {
-                                try doc.putString(key, val);
-                            }
-                        },
-                        .string => try doc.putString(key, val),
-                        .objectid => try doc.putString(key, val),
-                    }
-                } else {
-                    try doc.putString(key, val);
-                }
-            } else if (json[pos] == 't' or json[pos] == 'f') {
-                const is_true = json[pos] == 't';
-                pos += if (is_true) @as(usize, 4) else @as(usize, 5);
-                try doc.putBool(key, is_true);
-            } else if (json[pos] == 'n') {
-                pos += 4;
-                try doc.putNull(key);
-            } else if (json[pos] == '{') {
-                const nested_start = pos;
-                try skipJsonValue(json, &pos);
-                const nested_bytes = try self.jsonObjectToBson(json[nested_start..pos], fields);
-                defer self.allocator.free(nested_bytes);
-                const nested_doc = try BsonDocument.init(self.allocator, nested_bytes, false);
-                try doc.putDocument(key, nested_doc);
-            } else if (json[pos] == '[') {
-                pos += 1;
-                var arr_doc = BsonDocument.empty(self.allocator);
-                defer arr_doc.deinit();
-                var arr_idx: usize = 0;
-
-                while (pos < json.len) {
-                    skipJsonWhitespace(json, &pos);
-                    if (pos >= json.len or json[pos] == ']') {
-                        pos += 1;
-                        break;
-                    }
-                    if (json[pos] == ',') {
-                        pos += 1;
-                        continue;
-                    }
-
-                    var idx_buf: [16]u8 = undefined;
-                    const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{arr_idx}) catch "0";
-
-                    if (json[pos] == '"') {
-                        const s = try self.parseJsonString(json, &pos);
-                        defer self.allocator.free(s);
-                        try arr_doc.putString(idx_str, s);
-                    } else if (json[pos] == '{') {
-                        const nested_start = pos;
-                        try skipJsonValue(json, &pos);
-                        const nested_bytes = try self.jsonObjectToBson(json[nested_start..pos], fields);
-                        defer self.allocator.free(nested_bytes);
-                        const nested_doc = try BsonDocument.init(self.allocator, nested_bytes, false);
-                        try arr_doc.put(idx_str, .{ .document = nested_doc });
-                    } else {
-                        const num_start = pos;
-                        while (pos < json.len and json[pos] != ',' and json[pos] != ']' and
-                            json[pos] != ' ' and json[pos] != '\n' and json[pos] != '\r') pos += 1;
-                        const num_str = json[num_start..pos];
-                        if (tryParseJsonNumber(num_str)) |num| {
-                            switch (num) {
-                                .int => |v| try arr_doc.putInt64(idx_str, v),
-                                .float => |v| try arr_doc.putDouble(idx_str, v),
-                            }
-                        }
-                    }
-                    arr_idx += 1;
-                }
-
-                try doc.putArray(key, BsonArray.init(self.allocator, arr_doc.toBytes()));
-            } else {
-                const num_start = pos;
-                while (pos < json.len and json[pos] != ',' and json[pos] != '}' and
-                    json[pos] != ' ' and json[pos] != '\n' and json[pos] != '\r' and
-                    json[pos] != '\t') pos += 1;
-                const num_str = json[num_start..pos];
-
-                if (tryParseJsonNumber(num_str)) |num| {
-                    if (field_type) |ft| {
-                        switch (ft) {
-                            .bool => {
-                                const v = switch (num) {
-                                    .int => |i| i != 0,
-                                    .float => |f| f != 0,
-                                };
-                                try doc.putBool(key, v);
-                            },
-                            .double => {
-                                const v: f64 = switch (num) {
-                                    .int => |i| @floatFromInt(i),
-                                    .float => |f| f,
-                                };
-                                try doc.putDouble(key, v);
-                            },
-                            .int => switch (num) {
-                                .int => |v| try doc.putInt32(key, @intCast(v)),
-                                .float => |v| try doc.putInt32(key, @intFromFloat(v)),
-                            },
-                            else => switch (num) {
-                                .int => |v| try doc.putInt64(key, v),
-                                .float => |v| try doc.putDouble(key, v),
-                            },
-                        }
-                    } else {
-                        switch (num) {
-                            .int => |v| try doc.putInt64(key, v),
-                            .float => |v| try doc.putDouble(key, v),
-                        }
-                    }
-                }
-            }
+        var it = obj.iterator();
+        while (it.next()) |entry| {
+            try self.putJsonField(&doc, entry.key_ptr.*, entry.value_ptr.*, fields);
         }
 
         return try self.allocator.dupe(u8, doc.toBytes());
     }
 
-    fn parseJsonString(self: *Importer, json: []const u8, pos: *usize) ![]const u8 {
-        if (pos.* >= json.len or json[pos.*] != '"') return error.InvalidJsonFormat;
-        pos.* += 1;
-
-        var result = std.ArrayList(u8).empty;
-        errdefer result.deinit(self.allocator);
-
-        while (pos.* < json.len and json[pos.*] != '"') {
-            if (json[pos.*] == '\\') {
-                pos.* += 1;
-                if (pos.* >= json.len) break;
-                switch (json[pos.*]) {
-                    'n' => try result.append(self.allocator, '\n'),
-                    'r' => try result.append(self.allocator, '\r'),
-                    't' => try result.append(self.allocator, '\t'),
-                    '"' => try result.append(self.allocator, '"'),
-                    '\\' => try result.append(self.allocator, '\\'),
-                    '/' => try result.append(self.allocator, '/'),
-                    else => try result.append(self.allocator, json[pos.*]),
-                }
-            } else {
-                try result.append(self.allocator, json[pos.*]);
+    fn putJsonField(self: *Importer, doc: *BsonDocument, key: []const u8, value: std.json.Value, fields: ?[]const FieldDescriptor) anyerror!void {
+        const field_type: ?FieldType = if (fields) |fds| blk: {
+            for (fds) |fd| {
+                if (std.mem.eql(u8, fd.name, key)) break :blk fd.field_type;
             }
-            pos.* += 1;
-        }
-        if (pos.* < json.len) pos.* += 1;
+            break :blk null;
+        } else null;
 
-        return try result.toOwnedSlice(self.allocator);
+        switch (value) {
+            .string => |s| try self.putJsonString(doc, key, s, field_type),
+            .integer => |i| {
+                if (field_type) |ft| switch (ft) {
+                    .bool => try doc.putBool(key, i != 0),
+                    .double => try doc.putDouble(key, @floatFromInt(i)),
+                    .int => try doc.putInt32(key, @intCast(i)),
+                    else => try doc.putInt64(key, i),
+                } else try doc.putInt64(key, i);
+            },
+            .float => |f| {
+                if (field_type) |ft| switch (ft) {
+                    .bool => try doc.putBool(key, f != 0),
+                    .double => try doc.putDouble(key, f),
+                    .int => try doc.putInt32(key, @intFromFloat(f)),
+                    else => try doc.putDouble(key, f),
+                } else try doc.putDouble(key, f);
+            },
+            .number_string => |s| {
+                if (tryParseJsonNumber(s)) |num| switch (num) {
+                    .int => |v| try doc.putInt64(key, v),
+                    .float => |v| try doc.putDouble(key, v),
+                } else {
+                    try doc.putString(key, s);
+                }
+            },
+            .bool => |b| try doc.putBool(key, b),
+            .null => try doc.putNull(key),
+            .object => |o| {
+                const nested = try self.jsonValueToBson(o, fields);
+                defer self.allocator.free(nested);
+                const nested_doc = try BsonDocument.init(self.allocator, nested, false);
+                try doc.putDocument(key, nested_doc);
+            },
+            .array => |a| {
+                var arr_doc = BsonDocument.empty(self.allocator);
+                defer arr_doc.deinit();
+                for (a.items, 0..) |item, idx| {
+                    var idx_buf: [16]u8 = undefined;
+                    const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{idx}) catch "0";
+                    try self.putJsonField(&arr_doc, idx_str, item, fields);
+                }
+                try doc.putArray(key, BsonArray.init(self.allocator, arr_doc.toBytes()));
+            },
+        }
+    }
+
+    fn putJsonString(self: *Importer, doc: *BsonDocument, key: []const u8, s: []const u8, field_type: ?FieldType) !void {
+        _ = self;
+        const ft = field_type orelse {
+            try doc.putString(key, s);
+            return;
+        };
+        switch (ft) {
+            .int => {
+                if (std.fmt.parseInt(i64, s, 10)) |v| {
+                    try doc.putInt64(key, v);
+                } else |_| {
+                    try doc.putString(key, s);
+                }
+            },
+            .double => {
+                if (std.fmt.parseFloat(f64, s)) |v| {
+                    try doc.putDouble(key, v);
+                } else |_| {
+                    try doc.putString(key, s);
+                }
+            },
+            .bool => {
+                const is_true = std.mem.eql(u8, s, "true") or std.mem.eql(u8, s, "1") or std.mem.eql(u8, s, "yes");
+                try doc.putBool(key, is_true);
+            },
+            .datetime => {
+                if (datetime_mod.parseIso(s)) |epoch_ms| {
+                    try doc.putInt64(key, epoch_ms);
+                } else |_| {
+                    try doc.putString(key, s);
+                }
+            },
+            .string => try doc.putString(key, s),
+            .objectid => try doc.putString(key, s),
+        }
     }
 };
 
@@ -1059,80 +916,6 @@ const CsvFieldIterator = struct {
 };
 
 
-fn skipJsonWhitespace(json: []const u8, pos: *usize) void {
-    while (pos.* < json.len and (json[pos.*] == ' ' or json[pos.*] == '\n' or
-        json[pos.*] == '\r' or json[pos.*] == '\t')) pos.* += 1;
-}
-
-fn skipJsonValue(json: []const u8, pos: *usize) anyerror!void {
-    skipJsonWhitespace(json, pos);
-    if (pos.* >= json.len) return;
-
-    switch (json[pos.*]) {
-        '"' => {
-            pos.* += 1;
-            while (pos.* < json.len) {
-                if (json[pos.*] == '\\') {
-                    pos.* += 2;
-                } else if (json[pos.*] == '"') {
-                    pos.* += 1;
-                    return;
-                } else {
-                    pos.* += 1;
-                }
-            }
-        },
-        '{' => {
-            var depth: u32 = 0;
-            var in_str = false;
-            while (pos.* < json.len) {
-                if (json[pos.*] == '\\' and in_str) {
-                    pos.* += 2;
-                    continue;
-                }
-                if (json[pos.*] == '"') in_str = !in_str;
-                if (!in_str) {
-                    if (json[pos.*] == '{') depth += 1;
-                    if (json[pos.*] == '}') {
-                        depth -= 1;
-                        if (depth == 0) {
-                            pos.* += 1;
-                            return;
-                        }
-                    }
-                }
-                pos.* += 1;
-            }
-        },
-        '[' => {
-            var depth: u32 = 0;
-            var in_str = false;
-            while (pos.* < json.len) {
-                if (json[pos.*] == '\\' and in_str) {
-                    pos.* += 2;
-                    continue;
-                }
-                if (json[pos.*] == '"') in_str = !in_str;
-                if (!in_str) {
-                    if (json[pos.*] == '[') depth += 1;
-                    if (json[pos.*] == ']') {
-                        depth -= 1;
-                        if (depth == 0) {
-                            pos.* += 1;
-                            return;
-                        }
-                    }
-                }
-                pos.* += 1;
-            }
-        },
-        else => {
-            while (pos.* < json.len and json[pos.*] != ',' and json[pos.*] != '}' and
-                json[pos.*] != ']' and json[pos.*] != ' ' and json[pos.*] != '\n') pos.* += 1;
-        },
-    }
-}
-
 const JsonNumber = union(enum) {
     int: i64,
     float: f64,
@@ -1147,4 +930,56 @@ fn tryParseJsonNumber(s: []const u8) ?JsonNumber {
     }
     const i = std.fmt.parseInt(i64, s, 10) catch return null;
     return .{ .int = i };
+}
+
+fn dummyPost(_: *anyopaque, _: []const u8, _: []const u8) anyerror!u128 {
+    return 0;
+}
+
+test "jsonValueToBson: std.json parse + typed coercion round-trip" {
+    const allocator = std.testing.allocator;
+    var ctx: u8 = 0;
+    var imp = Importer.init(allocator, undefined, dummyPost, &ctx);
+
+    const json =
+        "{\"age\":\"30\",\"score\":4.5,\"active\":true,\"name\":\"bob\"," ++
+        "\"tags\":[\"a\",\"b\"],\"addr\":{\"city\":\"NYC\"}}";
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+
+    // "age" is declared int but arrives as a JSON string -> coerced to int64.
+    const fields = [_]FieldDescriptor{
+        .{ .name = "age", .field_type = .int },
+    };
+
+    const bytes = try imp.jsonValueToBson(parsed.value.object, &fields);
+    defer allocator.free(bytes);
+
+    var doc = try BsonDocument.init(allocator, bytes, false);
+    defer doc.deinit();
+
+    try std.testing.expectEqual(@as(?i64, 30), try doc.getInt64("age"));
+    try std.testing.expectEqual(@as(?f64, 4.5), try doc.getDouble("score"));
+    try std.testing.expectEqual(@as(?bool, true), try doc.getBool("active"));
+
+    const name = (try doc.getString("name")).?;
+    defer allocator.free(name);
+    try std.testing.expectEqualStrings("bob", name);
+
+    var arr = (try doc.getArray("tags")).?;
+    defer arr.deinit();
+    try std.testing.expectEqual(@as(usize, 2), try arr.len());
+
+    var addr = (try doc.getDocument("addr")).?;
+    defer addr.deinit();
+    const city = (try addr.getString("city")).?;
+    defer allocator.free(city);
+    try std.testing.expectEqualStrings("NYC", city);
+}
+
+test "import: malformed json is rejected by the standard parser (no OOB walk)" {
+    const allocator = std.testing.allocator;
+    // Truncated / hostile input errors cleanly in std.json instead of walking out of bounds.
+    try std.testing.expectError(error.UnexpectedEndOfInput, std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":", .{}));
 }

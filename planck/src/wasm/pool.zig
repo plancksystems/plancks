@@ -5,10 +5,14 @@ const wasmer = @import("wasmer");
 const host = @import("host.zig");
 const HostContext = host.HostContext;
 const WasmRuntime = @import("runtime.zig").WasmRuntime;
+const WASM_FUEL_PER_CALL = @import("runtime.zig").WASM_FUEL_PER_CALL;
 const Mutex = @import("utils").Mutex;
 const WasmPathMetrics = @import("metrics.zig").WasmPathMetrics;
 const StopWatch = @import("utils").StopWatch;
 const nowMs = @import("../common/common.zig").nowMs;
+
+const WASM_PAGE_BYTES: usize = 64 * 1024;
+const MAX_INSTANCE_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 
 const IDLE_TTL_MS: i64 = 60_000;
 const REAPER_INTERVAL_MS: i64 = 15_000;
@@ -80,6 +84,18 @@ pub const PooledInstance = struct {
         const memory = instance.getExportMem(module, "memory") orelse
             return error.MemoryExportNotFound;
 
+         
+        {
+            const log = std.log.scoped(.wasm);
+            const declared_max = memory.getType().limits().max;
+            if (declared_max == wasmer.LIMITS_MAX_DEFAULT) {
+                log.warn("WASM guest declares unbounded memory; per-call growth is not hard-capped (only steady-state recycle at {d} bytes). Rebuild the guest with a max_memory of {d} bytes to enforce a per-call cap.", .{ MAX_INSTANCE_MEMORY_BYTES, MAX_INSTANCE_MEMORY_BYTES });
+            } else if (@as(usize, declared_max) * WASM_PAGE_BYTES > MAX_INSTANCE_MEMORY_BYTES) {
+                log.err("WASM guest declares memory max {d} pages ({d} bytes) > cap {d} bytes; refusing to load", .{ declared_max, @as(usize, declared_max) * WASM_PAGE_BYTES, MAX_INSTANCE_MEMORY_BYTES });
+                return error.WasmMemoryExceedsCap;
+            }
+        }
+
         const initial_pages = memory.pages();
         memory.grow(64) catch {};
         const final_pages = memory.pages();
@@ -141,10 +157,15 @@ pub const PooledInstance = struct {
 
         var sw_proc: StopWatch = .{};
         sw_proc.start(io);
+        wasmer.Metering.setRemainingPoints(self.instance, WASM_FUEL_PER_CALL);
         const ret = self.process_fn.call(i32, .{
             @as(i32, @intCast(req_offset)),
             @as(i32, @intCast(raw_request.len)),
         }) catch |err| {
+            if (wasmer.Metering.pointsExhausted(self.instance)) {
+                log.err("WASM guest call exceeded the {d}-instruction fuel budget", .{WASM_FUEL_PER_CALL});
+                return error.WasmFuelExhausted;
+            }
             log.err("process_fn.call failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -305,6 +326,16 @@ pub const InstancePool = struct {
         const base = @intFromPtr(self.instances.items.ptr);
         const addr = @intFromPtr(instance);
         const idx = (addr - base) / @sizeOf(PooledInstance);
+
+        if (instance.memory.size() > MAX_INSTANCE_MEMORY_BYTES) {
+            const log = std.log.scoped(.wasm);
+            log.warn("recycling WASM instance over memory cap: {d} bytes", .{instance.memory.size()});
+            instance.deinit();
+            self.dormant[idx] = true;
+            self.in_use[idx] = false;
+            self.available_signal.signal(self.io);
+            return;
+        }
 
         instance.last_used_ms = nowMs(self.io);
 

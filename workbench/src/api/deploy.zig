@@ -10,7 +10,6 @@ const ServiceKind = services_mod.ServiceKind;
 const WbStorage = @import("../tasks/storage.zig").WbStorage;
 const Paths = @import("../tasks/paths.zig").Paths;
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 const ServiceStatus = @import("../tasks/service_manager.zig").ServiceStatus;
 const ServiceManager = @import("../tasks/service_manager.zig").ServiceManager;
 
@@ -33,7 +32,7 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const sc
     else if (std.mem.eql(u8, body.action, "update-wasm"))
         try updateWasm(ctx.services, allocator, &body)
     else
-        try json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Unknown action" });
+        try std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Unknown action" }, .{ .emit_null_optional_fields = false });
 
     try res.json(out);
 }
@@ -46,26 +45,26 @@ fn deploy(services: *AppServices, allocator: std.mem.Allocator, body: *const Dep
     services.deploying = true;
     defer services.deploying = false;
 
-    if (body.app.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "App name is required" });
-    if (body.name.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service name is required" });
-    if (body.config_yaml.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "db.yaml (config_yaml) is required" });
-    if (body.service_yaml.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "service.yaml is required" });
+    if (body.app.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
+    if (body.name.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service name is required" }, .{ .emit_null_optional_fields = false });
+    if (body.config_yaml.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "db.yaml (config_yaml) is required" }, .{ .emit_null_optional_fields = false });
+    if (body.service_yaml.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "service.yaml is required" }, .{ .emit_null_optional_fields = false });
 
-    const storage = services.storage orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Storage not initialized" });
-    const svc_mgr = services.service_manager orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
+    const svc_mgr = services.service_manager orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" }, .{ .emit_null_optional_fields = false });
 
     const service_already_existed = serviceExistsInApp(storage, allocator, body.app, body.name);
 
     if (try storage.getApp(body.app)) |d| {
         allocator.free(d.value);
     } else {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "App not found" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "App not found" }, .{ .emit_null_optional_fields = false });
     }
 
     const parsed = parseDeployPorts(allocator, body.config_yaml, body.service_yaml);
 
     svc_mgr.deploy(body.app, body.name, body.config_yaml, body.service_yaml) catch |err| {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
     };
 
     writeServiceCredentials(allocator, svc_mgr, body.app, body.name, body.admin_uid, body.admin_key) catch |err| {
@@ -106,41 +105,41 @@ fn deploy(services: *AppServices, allocator: std.mem.Allocator, body: *const Dep
         .{ body.name, body.app, parsed.port, parsed.wasm_port, if (service_already_existed) "re-provisioned" else "created" },
     );
 
-    return json.serialize(allocator, DeployResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn deploySseHub(services: *AppServices, allocator: std.mem.Allocator, body: *const DeployRequest) ![]const u8 {
     services.deploying = true;
     defer services.deploying = false;
 
-    if (body.app.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "App name is required" });
-    if (body.name.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service name is required" });
-    if (body.service_yaml.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "sse.yaml (service_yaml) is required" });
-    if (body.binary_data.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "binary_data is required" });
+    if (body.app.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "App name is required" }, .{ .emit_null_optional_fields = false });
+    if (body.name.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service name is required" }, .{ .emit_null_optional_fields = false });
+    if (body.service_yaml.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "sse.yaml (service_yaml) is required" }, .{ .emit_null_optional_fields = false });
+    if (body.binary_data.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "binary_data is required" }, .{ .emit_null_optional_fields = false });
 
-    const storage = services.storage orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Storage not initialized" });
-    const svc_mgr = services.service_manager orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
+    const svc_mgr = services.service_manager orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" }, .{ .emit_null_optional_fields = false });
 
     if (try storage.getApp(body.app)) |d| {
         allocator.free(d.value);
     } else {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "App not found" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "App not found" }, .{ .emit_null_optional_fields = false });
     }
 
     const decoder = std.base64.standard.Decoder;
     const decoded_len = decoder.calcSizeForSlice(body.binary_data) catch {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Invalid base64 encoding for binary_data" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Invalid base64 encoding for binary_data" }, .{ .emit_null_optional_fields = false });
     };
     const binary = allocator.alloc(u8, decoded_len) catch {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "OOM decoding binary_data" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "OOM decoding binary_data" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(binary);
     decoder.decode(binary, body.binary_data) catch {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Failed to decode base64 binary_data" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Failed to decode base64 binary_data" }, .{ .emit_null_optional_fields = false });
     };
 
     svc_mgr.deploySseService(body.app, body.name, body.service_yaml, binary) catch |err| {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
     };
 
     const service_already_existed = serviceExistsInApp(storage, allocator, body.app, body.name);
@@ -163,14 +162,14 @@ fn deploySseHub(services: *AppServices, allocator: std.mem.Allocator, body: *con
         .{ body.name, body.app, if (service_already_existed) "re-provisioned" else "created", binary.len },
     );
 
-    return json.serialize(allocator, DeployResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn undeploy(services: *AppServices, allocator: std.mem.Allocator, body: *const DeployRequest) ![]const u8 {
-    if (body.name.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service name is required" });
+    if (body.name.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service name is required" }, .{ .emit_null_optional_fields = false });
 
-    const storage = services.storage orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Storage not initialized" });
-    const svc_mgr = services.service_manager orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" });
+    const storage = services.storage orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Storage not initialized" }, .{ .emit_null_optional_fields = false });
+    const svc_mgr = services.service_manager orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" }, .{ .emit_null_optional_fields = false });
 
     services.pool.unregister(body.name);
 
@@ -178,25 +177,25 @@ fn undeploy(services: *AppServices, allocator: std.mem.Allocator, body: *const D
     if (app_name.len > 0) storage.removeServiceFromApp(app_name, body.name) catch {};
 
     svc_mgr.undeploy(app_name, body.name) catch |err| {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
     };
 
     disableBackupSchedule(allocator, storage, body.name);
 
     services.loadDeployedServices(allocator) catch {};
 
-    return json.serialize(allocator, DeployResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn startStop(services: *AppServices, allocator: std.mem.Allocator, body: *const DeployRequest, start: bool) ![]const u8 {
-    const svc_mgr = services.service_manager orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" });
+    const svc_mgr = services.service_manager orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" }, .{ .emit_null_optional_fields = false });
 
     const app_name = resolveAppForService(services, body.name);
 
     if (start) {
         svc_mgr.start(app_name, body.name) catch |err| {
             log.err("start failed for '{s}' (app='{s}'): {}", .{ body.name, app_name, err });
-            return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) });
+            return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
         };
 
         const svc_port = services.getPortForService(body.name);
@@ -205,23 +204,23 @@ fn startStop(services: *AppServices, allocator: std.mem.Allocator, body: *const 
                 const st = svc_mgr.status(app_name, body.name) catch ServiceStatus{ .state = .stopped, .pid = null, .exit_code = null };
                 if (st.state == .stopped) {
                     log.err("service '{s}' crashed immediately after start", .{body.name});
-                    return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service crashed immediately after start - check service logs" });
+                    return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service crashed immediately after start - check service logs" }, .{ .emit_null_optional_fields = false });
                 }
-                return json.serialize(allocator, DeployResponse{ .success = true, .@"error" = "Service started but not responding on port yet" });
+                return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = true, .@"error" = "Service started but not responding on port yet" }, .{ .emit_null_optional_fields = false });
             };
         }
     } else {
         services.disconnectByName(body.name);
         svc_mgr.stop(app_name, body.name) catch |err| {
             log.err("stop failed for '{s}' (app='{s}'): {}", .{ body.name, app_name, err });
-            return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) });
+            return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
         };
     }
-    return json.serialize(allocator, DeployResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn restart(services: *AppServices, allocator: std.mem.Allocator, body: *const DeployRequest) ![]const u8 {
-    const svc_mgr = services.service_manager orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" });
+    const svc_mgr = services.service_manager orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" }, .{ .emit_null_optional_fields = false });
 
     const app_name = resolveAppForService(services, body.name);
 
@@ -229,44 +228,44 @@ fn restart(services: *AppServices, allocator: std.mem.Allocator, body: *const De
 
     svc_mgr.restart(app_name, body.name) catch |err| {
         log.err("restart failed for '{s}' (app='{s}'): {}", .{ body.name, app_name, err });
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
     };
 
     const svc_port = services.getPortForService(body.name);
     if (svc_port > 0) {
         services.waitForPort("127.0.0.1", svc_port, 10) catch {
-            return json.serialize(allocator, DeployResponse{ .success = true, .@"error" = "Service restarted but not responding - may have crashed" });
+            return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = true, .@"error" = "Service restarted but not responding - may have crashed" }, .{ .emit_null_optional_fields = false });
         };
     }
 
-    return json.serialize(allocator, DeployResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn updateWasm(services: *AppServices, allocator: std.mem.Allocator, body: *const DeployRequest) ![]const u8 {
     services.deploying = true;
     defer services.deploying = false;
 
-    if (body.name.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service name is required" });
-    if (body.wasm_data.len == 0) return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "WASM data is required" });
+    if (body.name.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service name is required" }, .{ .emit_null_optional_fields = false });
+    if (body.wasm_data.len == 0) return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "WASM data is required" }, .{ .emit_null_optional_fields = false });
 
-    const svc_mgr = services.service_manager orelse return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" });
+    const svc_mgr = services.service_manager orelse return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Service manager not initialized" }, .{ .emit_null_optional_fields = false });
 
     const base_name = if (std.mem.indexOf(u8, body.name, ".db.")) |idx| body.name[0..idx] else body.name;
 
     const decoder = std.base64.standard.Decoder;
     const decoded_len = decoder.calcSizeForSlice(body.wasm_data) catch {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Invalid base64 encoding" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Invalid base64 encoding" }, .{ .emit_null_optional_fields = false });
     };
     const wasm_data = allocator.alloc(u8, decoded_len) catch {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Allocation failed" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Allocation failed" }, .{ .emit_null_optional_fields = false });
     };
     defer allocator.free(wasm_data);
     decoder.decode(wasm_data, body.wasm_data) catch {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Failed to decode base64" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Failed to decode base64" }, .{ .emit_null_optional_fields = false });
     };
 
     if (wasm_data.len < 4 or !std.mem.eql(u8, wasm_data[0..4], "\x00asm")) {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Invalid WASM binary" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Invalid WASM binary" }, .{ .emit_null_optional_fields = false });
     }
 
     const app_name = if (body.app.len > 0) body.app else "";
@@ -280,7 +279,7 @@ fn updateWasm(services: *AppServices, allocator: std.mem.Allocator, body: *const
     defer allocator.free(wasm_path);
 
     std.Io.Dir.writeFile(.cwd(), svc_mgr.io, .{ .sub_path = wasm_path, .data = wasm_data }) catch {
-        return json.serialize(allocator, DeployResponse{ .success = false, .@"error" = "Failed to write WASM module" });
+        return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = "Failed to write WASM module" }, .{ .emit_null_optional_fields = false });
     };
 
     const svc_dir = try p.serviceDir(allocator, app_name, body.name);
@@ -318,7 +317,7 @@ fn updateWasm(services: *AppServices, allocator: std.mem.Allocator, body: *const
 
     if (services.scheduler) |sched| sched.resetStatsBackoff(body.name);
 
-    return json.serialize(allocator, DeployResponse{ .success = true });
+    return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = true }, .{ .emit_null_optional_fields = false });
 }
 
 fn writeServiceCredentials(allocator: std.mem.Allocator, svc_mgr: *ServiceManager, app: []const u8, name: []const u8, uid: []const u8, key: []const u8) !void {
@@ -421,10 +420,8 @@ const DbCfgSubset = struct {
 };
 
 const ServiceCfgSubset = struct {
-    wasm: struct {
-        http: struct {
-            port: u16 = 0,
-        } = .{},
+    http: struct {
+        port: u16 = 0,
     } = .{},
 };
 
@@ -447,7 +444,7 @@ fn parseDeployPorts(allocator: std.mem.Allocator, db_yaml: []const u8, service_y
         var yaml: Yaml = .{ .source = service_yaml };
         if (yaml.load(a)) |_| {
             if (yaml.parse(a, ServiceCfgSubset)) |parsed| {
-                out.wasm_port = parsed.wasm.http.port;
+                out.wasm_port = parsed.http.port;
             } else |_| {}
         } else |_| {}
     }

@@ -6,7 +6,6 @@ const ListServicesResponse = @import("../model/responses/services.zig").ListServ
 const WbStorage = @import("../tasks/storage.zig").WbStorage;
 const ServiceKind = @import("../tasks/services.zig").ServiceKind;
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const schnell.Request, res: *schnell.Response) anyerror!void {
     const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr orelse return error.NoContext));
@@ -16,7 +15,7 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const schn
     defer svc_list.deinit(allocator);
 
     const storage = services.storage orelse {
-        const empty = try json.serialize(allocator, @as([]const types.ServiceStatus, &.{}));
+        const empty = try std.json.Stringify.valueAlloc(allocator, @as([]const types.ServiceStatus, &.{}), .{ .emit_null_optional_fields = false });
         try res.json(empty);
         return;
     };
@@ -77,6 +76,6 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, _: *const schn
         }
     } else |_| {}
 
-    const body = try json.serialize(allocator, svc_list.items);
+    const body = try std.json.Stringify.valueAlloc(allocator, svc_list.items, .{ .emit_null_optional_fields = false });
     try res.json(body);
 }

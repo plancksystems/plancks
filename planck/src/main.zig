@@ -26,7 +26,28 @@ var logger_ready: bool = false;
 
 var min_log_level: std.log.Level = .info;
 
+var shutdown_triggered: std.atomic.Value(bool) = .init(false);
+var shutdown_server: ?*Server = null;
+
 const log = std.log.scoped(.main);
+
+fn shutdownSignalHandler(sig: std.c.SIG) callconv(.c) void {
+    _ = sig;
+    if (shutdown_triggered.swap(true, .seq_cst)) return;
+    if (shutdown_server) |s| s.stop();
+}
+
+fn installShutdownHandlers() void {
+    if (comptime builtin.os.tag != .windows) {
+        const action = std.posix.Sigaction{
+            .handler = .{ .handler = shutdownSignalHandler },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.INT, &action, null);
+        std.posix.sigaction(std.posix.SIG.TERM, &action, null);
+    }
+}
 
 pub const std_options: std.Options = .{
     .logFn = logFn,
@@ -177,7 +198,12 @@ pub fn main(_: std.process.Init.Minimal) !void {
     defer if (wasm_runtime) |wrt| wrt.deinit();
 
     var http_server: ?schnell.Server = if (wasm_runtime) |wrt| blk: {
-        var srv = try schnell.Server.init(allocator, service.wasm.http);
+        var http_cfg = service.http;
+        if (service.tls.enabled) {
+            http_cfg.tls_cert_file = service.tls.cert_file;
+            http_cfg.tls_key_file = service.tls.key_file;
+        }
+        var srv = try schnell.Server.init(allocator, http_cfg);
         srv.setRawHandler(wasm_handler.handleRaw, @ptrCast(wrt));
         break :blk srv;
     } else null;
@@ -186,7 +212,7 @@ pub fn main(_: std.process.Init.Minimal) !void {
     var http_group: Io.Group = .init;
     if (http_server) |*hs| {
         http_group.async(io, startHttpServer, .{ hs, io });
-        log.info("WASM HTTP server listening on :{d}", .{service.wasm.http.port});
+        log.info("WASM HTTP server listening on :{d}{s}", .{ service.http.port, if (service.tls.enabled) " (TLS)" else "" });
     }
 
     defer if (http_server) |*hs| {
@@ -200,10 +226,14 @@ pub fn main(_: std.process.Init.Minimal) !void {
     };
     defer server.deinit();
 
+    shutdown_server = &server;
+    installShutdownHandlers();
+
     server.run() catch |err| {
         log.err("Server error: {}", .{err});
         return err;
     };
+    shutdown_server = null;
 
     log.info("Shutting down engine...", .{});
     engine.shutdown() catch |err| {

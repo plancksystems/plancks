@@ -14,6 +14,9 @@ pub const getStartFunction = wasi.getStartFunction;
 pub const ExternVec = wasm.ExternVec;
 pub const ByteVec = wasm.ByteVec;
 pub const Engine = wasm.Engine;
+pub const Config = wasm.Config;
+pub const Middleware = wasm.Middleware;
+pub const Metering = wasm.Metering;
 pub const Store = wasm.Store;
 pub const Module = wasm.Module;
 pub const Instance = wasm.Instance;
@@ -22,6 +25,7 @@ pub const Func = wasm.Func;
 pub const Memory = wasm.Memory;
 pub const MemoryType = wasm.MemoryType;
 pub const Limits = wasm.Limits;
+pub const LIMITS_MAX_DEFAULT = wasm.LIMITS_MAX_DEFAULT;
 
 pub fn detectWasmerLibDir(allocator: std.mem.Allocator, io: std.Io) !?[]const u8 {
     const result = std.process.run(allocator, io, .{

@@ -29,10 +29,8 @@ const DbCfgSubset = struct {
 
 const ServiceCfgSubset = struct {
     name: []const u8 = "",
-    wasm: struct {
-        http: struct {
-            port: u16 = 0,
-        } = .{},
+    http: struct {
+        port: u16 = 0,
     } = .{},
 };
 
@@ -103,7 +101,7 @@ fn collectMonoPorts(a: Allocator, io: Io, ports: *std.ArrayList(PortInfo), proje
     };
     project_name.* = svc.name;
     try ports.append(a, .{ .location = "./app/db.yaml:port", .value = db.port });
-    try ports.append(a, .{ .location = "./app/service.yaml:wasm.http.port", .value = svc.wasm.http.port });
+    try ports.append(a, .{ .location = "./app/service.yaml:http.port", .value = svc.http.port });
 }
 
 fn collectMicroPorts(a: Allocator, io: Io, ports: *std.ArrayList(PortInfo), project_name: *[]const u8) !void {
@@ -141,8 +139,8 @@ fn collectMicroPorts(a: Allocator, io: Io, ports: *std.ArrayList(PortInfo), proj
             error.FileNotFound => continue,
             else => return err,
         };
-        const wasm_loc = try std.fmt.allocPrint(a, "{s}:wasm.http.port", .{svc_path});
-        try ports.append(a, .{ .location = wasm_loc, .value = svc_cfg.wasm.http.port });
+        const wasm_loc = try std.fmt.allocPrint(a, "{s}:http.port", .{svc_path});
+        try ports.append(a, .{ .location = wasm_loc, .value = svc_cfg.http.port });
     }
 }
 

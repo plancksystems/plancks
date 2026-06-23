@@ -73,3 +73,30 @@ pub const WbConfig = struct {
         a.destroy(self);
     }
 };
+
+test "run mode parses known roles ignoring case" {
+    try std.testing.expectEqual(RunMode.dev, try RunMode.fromString("dev"));
+    try std.testing.expectEqual(RunMode.qa, try RunMode.fromString("QA"));
+    try std.testing.expectEqual(RunMode.prod, try RunMode.fromString("Prod"));
+}
+
+test "run mode rejects an unknown role" {
+    try std.testing.expectError(error.InvalidMode, RunMode.fromString("staging"));
+}
+
+test "query node url is absent without a query node" {
+    const cfg = WbConfig{};
+    try std.testing.expect(try cfg.getQueryNodeUrl(std.testing.allocator) == null);
+}
+
+test "query node url is absent when the address is blank" {
+    const cfg = WbConfig{ .query = .{ .address = "", .port = 9 } };
+    try std.testing.expect(try cfg.getQueryNodeUrl(std.testing.allocator) == null);
+}
+
+test "query node url combines address and port" {
+    const cfg = WbConfig{ .query = .{ .address = "10.0.0.2", .port = 2369 } };
+    const url = (try cfg.getQueryNodeUrl(std.testing.allocator)).?;
+    defer std.testing.allocator.free(url);
+    try std.testing.expectEqualStrings("http://10.0.0.2:2369", url);
+}

@@ -453,3 +453,64 @@ test "VlogEntry - single bit flip changes checksum" {
 
     try std.testing.expect(checksum1 != checksum2);
 }
+
+test "LogRecord serialize/deserialize round-trips and classifies corruption" {
+    const allocator = std.testing.allocator;
+
+    const TestWriter = struct {
+        buf: *std.ArrayList(u8),
+        alloc: std.mem.Allocator,
+        fn writeInt(w: *@This(), comptime T: type, v: T, endian: std.builtin.Endian) !void {
+            var tmp: [@sizeOf(T)]u8 = undefined;
+            std.mem.writeInt(T, &tmp, v, endian);
+            try w.buf.appendSlice(w.alloc, &tmp);
+        }
+        fn writeAll(w: *@This(), bytes: []const u8) !void {
+            try w.buf.appendSlice(w.alloc, bytes);
+        }
+    };
+    const TestReader = struct {
+        buffer: []const u8,
+        pos: usize,
+        fn readInt(r: *@This(), comptime T: type, endian: std.builtin.Endian) !T {
+            const size = @sizeOf(T);
+            if (r.pos + size > r.buffer.len) return error.EndOfStream;
+            const v = std.mem.readInt(T, r.buffer[r.pos..][0..size], endian);
+            r.pos += size;
+            return v;
+        }
+        fn readAll(r: *@This(), out: []u8) !void {
+            if (r.pos + out.len > r.buffer.len) return error.EndOfStream;
+            @memcpy(out, r.buffer[r.pos..][0..out.len]);
+            r.pos += out.len;
+        }
+    };
+
+    const rec = LogRecord{ .lsn = 42, .key = 0x1234, .value = "hello", .timestamp = 99, .kind = .insert };
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    var w = TestWriter{ .buf = &buf, .alloc = allocator };
+    try LogRecord.serialize(rec, &w);
+
+    {
+        var r = TestReader{ .buffer = buf.items, .pos = 0 };
+        const got = (try LogRecord.deserialize(allocator, &r)).?;
+        defer allocator.free(got.value);
+        try std.testing.expectEqual(@as(u64, 42), got.lsn);
+        try std.testing.expectEqual(@as(u128, 0x1234), got.key);
+        try std.testing.expectEqualStrings("hello", got.value);
+    }
+
+    {
+        const corrupt = try allocator.dupe(u8, buf.items);
+        defer allocator.free(corrupt);
+        corrupt[corrupt.len - 10] ^= 0xFF;
+        var r = TestReader{ .buffer = corrupt, .pos = 0 };
+        try std.testing.expectError(error.ChecksumMismatch, LogRecord.deserialize(allocator, &r));
+    }
+
+    {
+        var r = TestReader{ .buffer = buf.items[0 .. buf.items.len - 4], .pos = 0 };
+        try std.testing.expectError(error.InvalidRecordLength, LogRecord.deserialize(allocator, &r));
+    }
+}

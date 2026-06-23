@@ -8,6 +8,8 @@ const proto_mod = @import("proto");
 const SYSTEM_USERS_STORE_NS = @import("../common/constants.zig").SYSTEM_USERS_STORE_NS;
 const log = std.log.scoped(.security);
 
+const MAX_TRACKED_LOGINS: usize = 100_000;
+
 pub const Role = enum {
     admin,
     read_write,
@@ -96,7 +98,6 @@ pub const SecurityManager = struct {
     enabled: bool,
     io: Io,
     now: Now,
-    prng: std.Random.DefaultPrng,
 
     engine: ?*Engine,
     users_store_id: ?u16,
@@ -127,15 +128,12 @@ pub const SecurityManager = struct {
     };
 
     pub fn init(allocator: Allocator, enabled: bool, io: Io, throttle: ThrottleConfig) !*SecurityManager {
-        const now = Io.Clock.now(.real, io).toMilliseconds();
-        const seed: u64 = @bitCast(now);
         const mgr = try allocator.create(SecurityManager);
         mgr.* = SecurityManager{
             .allocator = allocator,
             .enabled = enabled,
             .io = io,
             .now = Now{ .io = io },
-            .prng = std.Random.DefaultPrng.init(seed),
             .engine = null,
             .users_store_id = null,
             .users = std.StringHashMap(User).init(allocator),
@@ -211,9 +209,8 @@ pub const SecurityManager = struct {
         var raw_key: [32]u8 = undefined;
         decoder.decode(&raw_key, key_b64) catch return error.InvalidCredentials;
 
-        const random = self.prng.random();
         var salt: [32]u8 = undefined;
-        random.bytes(&salt);
+        self.io.random(&salt);
         const hash = try self.hashKey(&raw_key, salt);
 
         const key_result = try self.allocator.dupe(u8, key_b64);
@@ -253,11 +250,10 @@ pub const SecurityManager = struct {
         }
 
         var raw_key: [32]u8 = undefined;
-        const random = self.prng.random();
-        random.bytes(&raw_key);
+        self.io.random(&raw_key);
 
         var salt: [32]u8 = undefined;
-        random.bytes(&salt);
+        self.io.random(&salt);
         const hash = try self.hashKey(&raw_key, salt);
 
         const encoder = &std.base64.standard.Encoder;
@@ -287,7 +283,14 @@ pub const SecurityManager = struct {
         return .{ .key_b64 = key_result, .password_hash = password_hash };
     }
 
-    pub fn authenticate(self: *SecurityManager, uid: []const u8, key_b64: []const u8) !Session {
+    // peer_ip as formatted by the server: IPv4 dotted (e.g. "127.0.0.1") or an
+    // IPv6 address as lowercase hex of its 16 bytes (::1 -> 31 zeros then "1").
+    fn isLoopbackIp(ip: []const u8) bool {
+        return std.mem.startsWith(u8, ip, "127.") or
+            std.mem.eql(u8, ip, "00000000000000000000000000000001");
+    }
+
+    pub fn authenticate(self: *SecurityManager, uid: []const u8, key_b64: []const u8, peer_ip: ?[]const u8) !Session {
         if (!self.enabled) {
             return Session{
                 .token = [_]u8{0} ** 32,
@@ -301,18 +304,30 @@ pub const SecurityManager = struct {
 
         const now = self.now.toMilliSeconds();
 
-        {
+        // Throttle by client IP, not uid: an attacker spamming a victim's uid
+        // would otherwise lock the victim out. IP keying preserves brute-force
+        // protection without that DoS. Callers without a peer (in-process) fall
+        // back to uid keying. Loopback clients are NOT throttled: an attacker
+        // isn't on localhost, and on a single-host deployment every local
+        // component shares 127.0.0.1, so one bad client would otherwise lock the
+        // whole control plane out. `null` means "no throttling for this attempt".
+        const throttle_key: ?[]const u8 = if (peer_ip) |ip|
+            (if (isLoopbackIp(ip)) null else ip)
+        else
+            uid;
+
+        if (throttle_key) |tk| {
             self.login_attempts_mutex.lock(self.io);
             defer self.login_attempts_mutex.unlock(self.io);
-            if (self.login_attempts.get(uid)) |info| {
+            if (self.login_attempts.get(tk)) |info| {
                 if (now < info.lockout_until) {
                     const remaining_s = @divTrunc(info.lockout_until - now, 1000);
-                    log.info("Login attempt for locked-out user '{s}' (locked for {d}s more)", .{ uid, remaining_s });
+                    log.info("Login attempt from locked-out client '{s}' (locked for {d}s more)", .{ tk, remaining_s });
                     return error.AccountLockedOut;
                 }
                 if (info.lockout_until > 0 and now >= info.lockout_until) {
-                    log.info("Lockout window expired for '{s}' — clearing failed-attempt counter", .{uid});
-                    self.clearFailedAttemptsLocked(uid);
+                    log.info("Lockout window expired for '{s}' — clearing failed-attempt counter", .{tk});
+                    self.clearFailedAttemptsLocked(tk);
                 }
             }
         }
@@ -320,7 +335,7 @@ pub const SecurityManager = struct {
         const decoder = &std.base64.standard.Decoder;
         var raw_key: [32]u8 = undefined;
         decoder.decode(&raw_key, key_b64) catch {
-            self.recordFailedAttempt(uid, now);
+            if (throttle_key) |tk| self.recordFailedAttempt(tk, now);
             return error.InvalidCredentials;
         };
 
@@ -328,7 +343,8 @@ pub const SecurityManager = struct {
         defer self.users_mutex.unlock(self.io);
 
         const user = self.users.get(uid) orelse {
-            self.recordFailedAttempt(uid, now);
+            _ = self.hashKey(&raw_key, [_]u8{0} ** 32) catch {};
+            if (throttle_key) |tk| self.recordFailedAttempt(tk, now);
             return error.InvalidCredentials;
         };
 
@@ -338,15 +354,14 @@ pub const SecurityManager = struct {
 
         const computed = try self.hashKey(&raw_key, user.key_salt);
         if (!std.crypto.timing_safe.eql([32]u8, computed, user.key_hash)) {
-            self.recordFailedAttempt(uid, now);
+            if (throttle_key) |tk| self.recordFailedAttempt(tk, now);
             return error.InvalidCredentials;
         }
 
-        self.clearFailedAttempts(uid);
+        if (throttle_key) |tk| self.clearFailedAttempts(tk);
 
         var token: [32]u8 = undefined;
-        const random = self.prng.random();
-        random.bytes(&token);
+        self.io.random(&token);
 
         const session = Session{
             .token = token,
@@ -364,12 +379,13 @@ pub const SecurityManager = struct {
         return session;
     }
 
-    fn recordFailedAttempt(self: *SecurityManager, uid: []const u8, now: i64) void {
+    fn recordFailedAttempt(self: *SecurityManager, key: []const u8, now: i64) void {
         self.login_attempts_mutex.lock(self.io);
         defer self.login_attempts_mutex.unlock(self.io);
-        const result = self.login_attempts.getOrPut(uid) catch return;
+        if (self.login_attempts.count() >= MAX_TRACKED_LOGINS and !self.login_attempts.contains(key)) return;
+        const result = self.login_attempts.getOrPut(key) catch return;
         if (!result.found_existing) {
-            result.key_ptr.* = self.allocator.dupe(u8, uid) catch return;
+            result.key_ptr.* = self.allocator.dupe(u8, key) catch return;
             result.value_ptr.* = LoginAttemptInfo{
                 .failed_count = 1,
                 .last_failed_at = now,
@@ -391,20 +407,20 @@ pub const SecurityManager = struct {
                 );
             }
             result.value_ptr.lockout_until = now + multiplied_duration;
-            log.info("User '{s}' locked out for {d}ms after {d} failed attempts", .{
-                uid, multiplied_duration, count,
+            log.info("Client '{s}' locked out for {d}ms after {d} failed attempts", .{
+                key, multiplied_duration, count,
             });
         }
     }
 
-    fn clearFailedAttempts(self: *SecurityManager, uid: []const u8) void {
+    fn clearFailedAttempts(self: *SecurityManager, key: []const u8) void {
         self.login_attempts_mutex.lock(self.io);
         defer self.login_attempts_mutex.unlock(self.io);
-        self.clearFailedAttemptsLocked(uid);
+        self.clearFailedAttemptsLocked(key);
     }
 
-    fn clearFailedAttemptsLocked(self: *SecurityManager, uid: []const u8) void {
-        if (self.login_attempts.fetchRemove(uid)) |entry| {
+    fn clearFailedAttemptsLocked(self: *SecurityManager, key: []const u8) void {
+        if (self.login_attempts.fetchRemove(key)) |entry| {
             self.allocator.free(entry.key);
         }
     }
@@ -435,6 +451,7 @@ pub const SecurityManager = struct {
 
     pub fn checkPermission(self: *SecurityManager, session: *const Session, permission_type: PermissionType) !void {
         _ = self;
+        if (!session.isValid()) return error.Unauthenticated;
         const has_permission = switch (permission_type) {
             .read => session.permissions.can_read,
             .write => session.permissions.can_write,
@@ -464,11 +481,10 @@ pub const SecurityManager = struct {
         const user_ptr = self.users.getPtr(username) orelse return error.UserNotFound;
 
         var raw_key: [32]u8 = undefined;
-        const random = self.prng.random();
-        random.bytes(&raw_key);
+        self.io.random(&raw_key);
 
         var new_salt: [32]u8 = undefined;
-        random.bytes(&new_salt);
+        self.io.random(&new_salt);
         user_ptr.key_hash = try self.hashKey(&raw_key, new_salt);
         user_ptr.key_salt = new_salt;
 
@@ -541,7 +557,6 @@ pub const SecurityManager = struct {
         const user_count = self.users.count();
         self.users_mutex.unlock(self.io);
 
-        std.debug.print("attachEngine: user_count={d}\n", .{user_count});
         if (user_count == 0) {
             const eng = self.engine orelse return error.EngineNotAttached;
 
@@ -549,7 +564,6 @@ pub const SecurityManager = struct {
             defer self.allocator.free(result.key_b64);
             defer self.allocator.free(result.password_hash);
             self.has_default_key = true;
-            std.debug.print("attachEngine: admin created with default key\n", .{});
             _ = eng.catalog.createUser("admin", result.password_hash, 0) catch |err| {
                 log.err("Failed to persist default admin in catalog: {}", .{err});
             };
@@ -970,7 +984,7 @@ test "SecurityManager - authenticate when disabled" {
     const mgr = try SecurityManager.init(allocator, false, std.testing.io, .{});
     defer mgr.deinit();
 
-    var session = try mgr.authenticate("anyone", "anything");
+    var session = try mgr.authenticate("anyone", "anything", null);
     defer session.deinit(allocator);
 
     try std.testing.expectEqualStrings("anonymous", session.username);
@@ -997,7 +1011,7 @@ test "SecurityManager - authenticate invalid credentials" {
     const admin_key = try mgr.createDefaultAdmin();
     defer allocator.free(admin_key);
 
-    const result = mgr.authenticate("admin", "dGhpcyBpcyBhIGJhZCBrZXkgdGhhdCB3b250IHdvcms=");
+    const result = mgr.authenticate("admin", "dGhpcyBpcyBhIGJhZCBrZXkgdGhhdCB3b250IHdvcms=", null);
     try std.testing.expectError(error.InvalidCredentials, result);
 }
 
@@ -1009,7 +1023,7 @@ test "SecurityManager - authenticate valid credentials" {
     const admin_key = try mgr.createDefaultAdmin();
     defer allocator.free(admin_key);
 
-    const session = try mgr.authenticate("admin", admin_key);
+    const session = try mgr.authenticate("admin", admin_key, null);
 
     try std.testing.expectEqualStrings("admin", session.username);
     try std.testing.expectEqual(true, session.permissions.can_admin);
@@ -1115,10 +1129,10 @@ test "SecurityManager - regenerateKey" {
     defer allocator.free(result.key_b64);
     defer allocator.free(result.password_hash);
 
-    const old_auth = mgr.authenticate("admin", admin_key);
+    const old_auth = mgr.authenticate("admin", admin_key, null);
     try std.testing.expectError(error.InvalidCredentials, old_auth);
 
-    const session = try mgr.authenticate("admin", result.key_b64);
+    const session = try mgr.authenticate("admin", result.key_b64, null);
     try std.testing.expectEqualStrings("admin", session.username);
 }
 
@@ -1139,7 +1153,7 @@ test "SecurityManager - revokeSession" {
     const admin_key = try mgr.createDefaultAdmin();
     defer allocator.free(admin_key);
 
-    const session = try mgr.authenticate("admin", admin_key);
+    const session = try mgr.authenticate("admin", admin_key, null);
     const token = session.token;
 
     _ = try mgr.validateSession(token);
@@ -1227,15 +1241,37 @@ test "SecurityManager - brute-force lockout after max attempts" {
     const bad_key = "dGhpcyBpcyBhIGJhZCBrZXkgdGhhdCB3b250IHdvcms=";
 
     for (0..3) |_| {
-        const result = mgr.authenticate("admin", bad_key);
+        const result = mgr.authenticate("admin", bad_key, null);
         try std.testing.expectError(error.InvalidCredentials, result);
     }
 
-    const result = mgr.authenticate("admin", bad_key);
+    const result = mgr.authenticate("admin", bad_key, null);
     try std.testing.expectError(error.AccountLockedOut, result);
 
-    const result2 = mgr.authenticate("admin", admin_key);
+    const result2 = mgr.authenticate("admin", admin_key, null);
     try std.testing.expectError(error.AccountLockedOut, result2);
+}
+
+test "SecurityManager - lockout is per client IP, not per victim account" {
+    const allocator = std.testing.allocator;
+    const mgr = try SecurityManager.init(allocator, true, std.testing.io, .{
+        .max_failed_attempts = 3,
+        .lockout_duration_ms = 60_000,
+        .lockout_multiplier = 2,
+    });
+    defer mgr.deinit();
+
+    const admin_key = try mgr.createDefaultAdmin();
+    defer allocator.free(admin_key);
+
+    const bad_key = "dGhpcyBpcyBhIGJhZCBrZXkgdGhhdCB3b250IHdvcms=";
+
+    for (0..4) |_| {
+        _ = mgr.authenticate("admin", bad_key, "10.0.0.1") catch {};
+    }
+    try std.testing.expectError(error.AccountLockedOut, mgr.authenticate("admin", bad_key, "10.0.0.1"));
+
+    _ = try mgr.authenticate("admin", admin_key, "10.0.0.2");
 }
 
 test "SecurityManager - successful login clears failed attempts" {
@@ -1253,14 +1289,14 @@ test "SecurityManager - successful login clears failed attempts" {
     const bad_key = "dGhpcyBpcyBhIGJhZCBrZXkgdGhhdCB3b250IHdvcms=";
 
     for (0..3) |_| {
-        const result = mgr.authenticate("admin", bad_key);
+        const result = mgr.authenticate("admin", bad_key, null);
         try std.testing.expectError(error.InvalidCredentials, result);
     }
 
-    _ = try mgr.authenticate("admin", admin_key);
+    _ = try mgr.authenticate("admin", admin_key, null);
 
     for (0..3) |_| {
-        const result = mgr.authenticate("admin", bad_key);
+        const result = mgr.authenticate("admin", bad_key, null);
         try std.testing.expectError(error.InvalidCredentials, result);
     }
 }

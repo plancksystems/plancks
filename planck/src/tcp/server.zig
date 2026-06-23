@@ -21,7 +21,6 @@ const SecurityManager = @import("../storage/security.zig").SecurityManager;
 const Session_Security = @import("../storage/security.zig").Session;
 const PermissionType = @import("../storage/security.zig").PermissionType;
 const bson = @import("bson");
-const tls = @import("tls");
 const ReplicationManager = @import("replication.zig").ReplicationManager;
 const constants = @import("../common/constants.zig");
 const dispatchOp = @import("../engine/dispatch.zig").dispatch;
@@ -53,7 +52,7 @@ pub const Server = struct {
     mode: std.atomic.Value(u8),
     listener: ?*net.Server,
     group: Io.Group,
-    tls_auth: ?*tls.config.CertKeyPair,
+    conn_mutex: Io.Mutex,
 
     pub fn init(allocator: Allocator, config: *const Config, io: Io, engine: *Engine, security_enabled: bool, config_dir: Io.Dir) !Server {
         const address = try net.IpAddress.parseIp4(config.address, config.port);
@@ -91,23 +90,6 @@ pub const Server = struct {
             log.warn("Security DISABLED - all connections have admin access", .{});
         }
 
-        var tls_auth: ?*tls.config.CertKeyPair = null;
-        if (config.tls.enabled) {
-            const auth = try allocator.create(tls.config.CertKeyPair);
-            auth.* = tls.config.CertKeyPair.fromFilePathAbsolute(
-                allocator,
-                io,
-                config.tls.cert_file,
-                config.tls.key_file,
-            ) catch |err| {
-                log.err("Failed to load TLS certificate/key: {}", .{err});
-                allocator.destroy(auth);
-                return err;
-            };
-            tls_auth = auth;
-            log.info("TLS 1.3 enabled with cert={s} key={s}", .{ config.tls.cert_file, config.tls.key_file });
-        }
-
         return Server{
             .allocator = allocator,
             .config = config,
@@ -124,15 +106,11 @@ pub const Server = struct {
             .mode = std.atomic.Value(u8).init(@intFromEnum(OperationMode.online)),
             .listener = null,
             .group = .init,
-            .tls_auth = tls_auth,
+            .conn_mutex = .init,
         };
     }
 
     pub fn deinit(self: *Server) void {
-        if (self.tls_auth) |auth| {
-            auth.deinit(self.allocator);
-            self.allocator.destroy(auth);
-        }
         self.session_pool.deinit();
         self.message_buffer_pool.deinit();
         self.security_manager.deinit();
@@ -142,9 +120,38 @@ pub const Server = struct {
         return self.active_connections.load(.monotonic);
     }
 
+    fn isLoopbackAddr(addr: []const u8) bool {
+        return std.mem.startsWith(u8, addr, "127.") or
+            std.mem.eql(u8, addr, "::1") or
+            std.mem.eql(u8, addr, "localhost");
+    }
+
+    fn isPeerAllowed(self: *const Server, ip: ?[]const u8) bool {
+        if (self.config.allowed_ips.len == 0) return true;
+        const peer = ip orelse return false;
+        if (isLoopbackAddr(peer)) return true;
+        for (self.config.allowed_ips) |allowed| {
+            if (std.mem.eql(u8, allowed, peer)) return true;
+        }
+        return false;
+    }
+
     pub fn run(self: *Server) !void {
+        if (self.security_enabled and self.security_manager.hasDefaultKey()) {
+            log.warn("admin user still holds the well-known DEFAULT key — rotate it with RegenerateKey now", .{});
+            if (!isLoopbackAddr(self.config.address)) {
+                log.err("refusing to serve on non-loopback {s} with the default admin key; bind 127.0.0.1, rotate the key, then restart", .{self.config.address});
+                return error.DefaultKeyOnPublicBind;
+            }
+        }
+
+        if (!isLoopbackAddr(self.config.address)) {
+            log.warn("non-loopback bind {s} — the wire protocol is plaintext; restrict access to known sources or front with a TLS-terminating proxy", .{self.config.address});
+        }
+
         var listening = try self.address.listen(self.io, .{ .reuse_address = true });
         self.listener = &listening;
+
         defer {
             self.listener = null;
             if (!self.shutdown_requested.load(.acquire)) {
@@ -163,6 +170,16 @@ pub const Server = struct {
                 log.err("Accept error: {}", .{err});
                 continue;
             };
+
+            if (self.config.allowed_ips.len > 0) {
+                var ip_buf: [64]u8 = undefined;
+                const peer_ip = peerIpFromFd(connection.socket.handle, &ip_buf);
+                if (!self.isPeerAllowed(peer_ip)) {
+                    log.warn("rejecting connection from {s} — not in allowed_ips", .{peer_ip orelse "unknown"});
+                    connection.close(self.io);
+                    continue;
+                }
+            }
 
             const prev = self.active_connections.fetchAdd(1, .monotonic);
             if (prev >= self.config.max_sessions) {
@@ -203,17 +220,48 @@ pub const Server = struct {
     }
 
     fn setTcpNoDelay(fd: std.posix.fd_t) void {
-        if(comptime builtin.os.tag != .windows) {
+        if (comptime builtin.os.tag != .windows) {
             const value: c_int = 1;
             const opt: [*]const u8 = @ptrCast(&value);
             _ = std.posix.system.setsockopt(fd, std.c.IPPROTO.TCP, std.c.TCP.NODELAY, opt, @sizeOf(c_int));
         }
     }
 
+    fn setTcpKeepAlive(fd: std.posix.fd_t) void {
+        if (comptime builtin.os.tag != .windows) {
+            const value: c_int = 1;
+            const opt: [*]const u8 = @ptrCast(&value);
+            _ = std.posix.system.setsockopt(fd, std.c.SOL.SOCKET, std.c.SO.KEEPALIVE, opt, @sizeOf(c_int));
+        }
+    }
+
+    fn peerIpFromFd(fd: std.posix.fd_t, buf: []u8) ?[]const u8 {
+        if (comptime builtin.os.tag != .windows) {
+            var storage: std.posix.sockaddr.storage = undefined;
+            var len: std.posix.socklen_t = @sizeOf(@TypeOf(storage));
+            std.posix.getpeername(fd, @ptrCast(&storage), &len) catch return null;
+            switch (storage.family) {
+                std.posix.AF.INET => {
+                    const sin: *const std.posix.sockaddr.in = @ptrCast(@alignCast(&storage));
+                    const b: [4]u8 = @bitCast(sin.addr);
+                    return std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}", .{ b[0], b[1], b[2], b[3] }) catch null;
+                },
+                std.posix.AF.INET6 => {
+                    const sin6: *const std.posix.sockaddr.in6 = @ptrCast(@alignCast(&storage));
+                    const hex = std.fmt.bytesToHex(sin6.addr, .lower);
+                    return std.fmt.bufPrint(buf, "{s}", .{hex}) catch null;
+                },
+                else => return null,
+            }
+        }
+        return null;
+    }
+
     fn handleConnection(self: *Server, connection: net.Stream) Io.Cancelable!void {
         defer connection.close(self.io);
 
         setTcpNoDelay(connection.socket.handle);
+        setTcpKeepAlive(connection.socket.handle);
 
         defer _ = self.active_connections.fetchSub(1, .monotonic);
 
@@ -223,31 +271,12 @@ pub const Server = struct {
         };
         defer self.session_pool.release(session);
 
-        if (self.tls_auth) |auth| {
-            const rng_impl: std.Random.IoSource = .{ .io = self.io };
-            var tls_conn = tls.serverFromStream(self.io, connection, .{
-                .auth = auth,
-                .now = Io.Clock.real.now(self.io),
-                .rng = rng_impl.interface(),
-            }) catch |err| {
-                log.err("TLS handshake failed: {}", .{err});
-                return;
-            };
-            defer tls_conn.close() catch {};
-            var tls_reader = tls_conn.reader(&session.read_buffer);
-            var tls_writer = tls_conn.writer(&session.write_buffer);
-            session.run(&tls_reader.interface, &tls_writer.interface) catch |err| {
-                if (err == error.Canceled) return error.Canceled;
-                log.err("Session error: {}", .{err});
-            };
-        } else {
-            var reader = connection.reader(self.io, &session.read_buffer);
-            var writer = connection.writer(self.io, &session.write_buffer);
-            session.run(&reader.interface, &writer.interface) catch |err| {
-                if (err == error.Canceled) return error.Canceled;
-                log.err("Session error: {}", .{err});
-            };
-        }
+        var reader = connection.reader(self.io, &session.read_buffer);
+        var writer = connection.writer(self.io, &session.write_buffer);
+        session.run(&reader.interface, &writer.interface) catch |err| {
+            if (err == error.Canceled) return error.Canceled;
+            log.err("Session error: {}", .{err});
+        };
     }
 };
 
@@ -268,6 +297,12 @@ pub const Session = struct {
     authenticated: bool,
     shutdown_after_reply: bool,
     response_writer: Buffer,
+    peer_ip_buf: [64]u8 = undefined,
+    peer_ip_len: usize = 0,
+
+    fn peerIp(self: *const Session) ?[]const u8 {
+        return if (self.peer_ip_len == 0) null else self.peer_ip_buf[0..self.peer_ip_len];
+    }
 
     pub fn init(allocator: Allocator, io: Io, connection: net.Stream, engine: *Engine, server: *Server, idle_timeout_ms: u64, message_buffer_pool: ?*MessageBufferPool, security_manager: *SecurityManager) !Session {
         var session = Session{
@@ -305,17 +340,19 @@ pub const Session = struct {
         self.authenticated = !self.security_manager.enabled;
         self.shutdown_after_reply = false;
         self.security_session = null;
+        self.peer_ip_len = 0;
     }
 
     pub fn isIdle(self: *const Session) bool {
         if (self.idle_timeout_ms == 0) return false;
         const now = self.now.toMilliSeconds();
-        const elapsed: u64 = @intCast(@max(0, now - self.last_activity_ms));
+        const last = @atomicLoad(i64, &self.last_activity_ms, .monotonic);
+        const elapsed: u64 = @intCast(@max(0, now - last));
         return elapsed > self.idle_timeout_ms;
     }
 
     fn updateActivity(self: *Session) void {
-        self.last_activity_ms = self.now.toMilliSeconds();
+        @atomicStore(i64, &self.last_activity_ms, self.now.toMilliSeconds(), .monotonic);
     }
 
     pub fn run(self: *Session, reader: *Io.Reader, writer: *Io.Writer) !void {
@@ -530,6 +567,11 @@ pub const Session = struct {
         }
 
         try self.checkPermission(op);
+
+        if (!self.server.config.primary) switch (op.*) {
+            .Insert, .BatchInsert, .Update, .Delete, .NextSequence => return Operation{ .Reply = .{ .status = .not_leader, .data = null } },
+            else => {},
+        };
 
         const maybe_ns: ?[]const u8 = switch (op.*) {
             .Insert => |d| d.store_ns,
@@ -829,9 +871,8 @@ pub const Session = struct {
             },
 
             .Authenticate => |data| blk: {
-                std.debug.print("Auth request: uid={s} key_len={d}\n", .{ data.uid, data.key.len });
-                const session = self.security_manager.authenticate(data.uid, data.key) catch |err| {
-                    std.debug.print("Auth FAILED: {}\n", .{err});
+                const session = self.security_manager.authenticate(data.uid, data.key, self.peerIp()) catch |err| {
+                    log.debug("authentication failed: {s}", .{@errorName(err)});
                     const code: ErrorCode = switch (err) {
                         error.InvalidCredentials => .invalid_credentials,
                         error.AccountLockedOut => .account_locked,
@@ -929,7 +970,7 @@ pub const Session = struct {
 
     fn checkAdminPermission(self: *Session, op: *const AdminOperation) !void {
         switch (op.*) {
-            .Authenticate, .ShipWal => return,
+            .Authenticate => return,
             else => {},
         }
         if (!self.authenticated) return error.Unauthenticated;
@@ -942,8 +983,9 @@ pub const Session = struct {
             .Restore, .Backup, .Stats, .Collect, .Vlogs => .admin,
             .SetConfig, .Import, .Demote, .Promote => .admin,
             .SaveToken, .RevokeToken, .RefreshToken, .AuditLog => .admin,
+            .ShipWal => .admin,
             .GetConfig, .Export, .Ping => .read,
-            .Authenticate, .Logout, .ShipWal => return error.PermissionDenied,
+            .Authenticate, .Logout => return error.PermissionDenied,
             .Reply, .BatchReply => return error.InvalidOperation,
             .Create, .Flush => .admin,
             else => return error.InvalidOperation,
@@ -1404,3 +1446,67 @@ pub const Session = struct {
     }
 };
 
+test "ShipWal is rejected on an unauthenticated connection" {
+    var s: Session = undefined;
+    s.authenticated = false;
+    const op = AdminOperation{ .ShipWal = .{
+        .op_kind = 0,
+        .store_ns = "",
+        .lsn = 0,
+        .doc_id = 0,
+        .timestamp = 0,
+        .data = "",
+    } };
+    try std.testing.expectError(error.Unauthenticated, s.checkAdminPermission(&op));
+}
+
+test "Authenticate is always allowed without a session" {
+    var s: Session = undefined;
+    s.authenticated = false;
+    const op = AdminOperation{ .Authenticate = .{ .uid = "x", .key = "y" } };
+    try s.checkAdminPermission(&op);
+}
+
+test "shutdown unblocks a stalled socket read (idle-connection reaper mechanism)" {
+    const io = std.testing.io;
+
+    const listen_addr = try net.IpAddress.parseIp4("127.0.0.1", 0);
+    var listener = try net.IpAddress.listen(&listen_addr, io, .{ .reuse_address = true });
+    defer listener.deinit(io);
+
+    var storage: std.posix.sockaddr.storage = undefined;
+    var slen: std.posix.socklen_t = @sizeOf(@TypeOf(storage));
+    try std.testing.expect(std.posix.system.getsockname(listener.socket.handle, @ptrCast(&storage), &slen) == 0);
+    const sin: *const std.posix.sockaddr.in = @ptrCast(@alignCast(&storage));
+    const port = std.mem.bigToNative(u16, sin.port);
+
+    const connect_addr = try net.IpAddress.parseIp4("127.0.0.1", port);
+    var client = try connect_addr.connect(io, .{ .mode = .stream, .protocol = .tcp });
+    defer client.close(io);
+
+    var server_stream = try listener.accept(io);
+    defer server_stream.close(io);
+
+    const Reader = struct {
+        stream: net.Stream,
+        io: Io,
+        unblocked: bool = false,
+
+        fn run(self: *@This()) void {
+            var buf: [16]u8 = undefined;
+            var reader = self.stream.reader(self.io, &buf);
+            // The peer never sends anything; this blocks until the socket is shut down.
+            reader.interface.readSliceAll(buf[0..4]) catch {
+                self.unblocked = true;
+            };
+        }
+    };
+    var reader_ctx = Reader{ .stream = server_stream, .io = io };
+    const thread = try std.Thread.spawn(.{}, Reader.run, .{&reader_ctx});
+
+    io.sleep(Io.Duration.fromMilliseconds(50), .awake) catch {};
+    _ = std.posix.system.shutdown(server_stream.socket.handle, std.posix.SHUT.RDWR);
+
+    thread.join();
+    try std.testing.expect(reader_ctx.unblocked);
+}

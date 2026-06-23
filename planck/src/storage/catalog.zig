@@ -165,7 +165,7 @@ pub const Catalog = struct {
                 backup.* = b;
                 try self.backups.put(backup.name, backup);
             },
-            .Service, .Schedule, .Document, .Sequence => unreachable,
+            .Service, .Schedule, .Document, .Sequence => {},
         }
     }
 
@@ -867,7 +867,7 @@ pub const Catalog = struct {
                     return;
                 }
             },
-            .Service, .Schedule, .Document, .Sequence => unreachable,
+            .Service, .Schedule, .Document, .Sequence => {},
         }
     }
 

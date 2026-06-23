@@ -1,8 +1,39 @@
 # Planck
 
-Database + control plane + CLI for shipping small-to-mid-sized apps
-without standing up a separate operational stack. One release tarball
-gives you three binaries:
+Planck is a document database with a WebAssembly runtime built in, so
+your application logic runs inside the database, right next to the data.
+
+The idea is to get rid of the usual split between the database and a
+separate service layer. Instead of running an API tier that shuttles
+data back and forth over the network, you deploy your app as a WASM
+module and the engine runs it where the data already lives. On an
+equivalent CRUD workload I measured this at around 4.5x faster than a
+Node/Express/MongoDB stack. You can reproduce the benchmark with
+[perf-compare](https://github.com/plancksystems/perf-compare).
+
+Everything is written in Zig: the storage layer, the wire protocol,
+WASM hosting, replication, the control plane, the CLI, an application
+framework, and client libraries for five languages.
+
+## What's in it
+
+- An embedded WASM runtime, so application logic runs in-process with
+  no separate service tier and no network hop between the app and the
+  data.
+- A document store with its own binary wire protocol and a query
+  language called PQL.
+- Operational features that ship in the box: async replication for read
+  replicas, WAL streaming to network locations, and change streams you
+  can consume as server-sent events through `ssehub`.
+- The engine, the web control plane, and the CLI all in one tarball.
+  `planctl new` scaffolds a working app and deploys it in a few minutes.
+- Client libraries for Go, JavaScript, Python, Rust, and Zig.
+- `schnell-zig`, a companion WASM application framework with routing,
+  middleware, sessions, and OAuth/Stripe helpers for the apps you host.
+
+## The three binaries
+
+One release tarball gives you three binaries:
 
 - **`planck`**: the database engine (storage, wire protocol, optional
   WASM hosting, change streams, replication). See [planck/](planck/).
@@ -68,23 +99,6 @@ Move-Item .\planck-0.1.0-x86_64-windows\bin 'C:\Program Files\Planck\bin'
 ```
 
 `planctl system init` expects the binaries at `C:\Program Files\Planck\bin`. Then open **Advanced System Settings**, go to **Environment Variables**, and add `C:\Program Files\Planck\bin` to both the User and System `Path` entries.
-
-## Initialize the host
-
-Before you can deploy anything, you need a workbench (the control plane) and a system database running on this host. One command sets both up:
-
-```sh
-planctl system init
-```
-
-What `system init` does:
-
-1. Lays out the data directory under the OS-specific install root (`$HOME/.planck` on macOS, `/opt/planck` on Linux, `C:\Program Files\Planck` on Windows).
-2. Drops a default `config.yaml` for workbench. (Config is YAML, always. No env-var overrides.)
-3. Brings up the system database on port `23469`.
-4. Registers `planck` and `workbench` as OS-managed services, launchd (macOS), systemd (Linux), or the Windows Service Manager, and starts them.
-
-The install root and service manager are chosen automatically by the host OS; there is no flag to override them. (macOS registers launchd daemons too, it does not spawn the processes directly.)
 
 ## Initialize the host
 
@@ -230,9 +244,7 @@ Minimum Zig version: 0.16.0. macOS / Linux release builds also need
 Mixed, per subproject:
 
 - [planck/](planck/) (the database engine): Business Source License 1.1.
-  Production use is fine; offering planck itself as a managed
-  database-as-a-service to third parties is restricted. Converts to
-  Apache 2.0 four years after each release. See
+  Converts to Apache 2.0 four years after each release. See
   [planck/LICENSE](planck/LICENSE).
 - [workbench/](workbench/), [planctl/](planctl/), [ui/](ui/): MIT.
 - Vendored / pinned dependencies (`wasmer-zig-api/`, third-party

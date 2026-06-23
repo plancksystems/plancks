@@ -2,7 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const schnell = @import("schnell");
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 pub const HealthResponse = struct {
     ready: bool = false,
@@ -14,9 +13,9 @@ pub fn handle(ctx_ptr: ?*anyopaque, allocator: Allocator, _: *const schnell.Requ
     const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr orelse return error.NoContext));
 
     const ready = ctx.services.storage != null;
-    const body = try json.serialize(allocator, HealthResponse{
+    const body = try std.json.Stringify.valueAlloc(allocator, HealthResponse{
         .ready = ready,
         .systemdb = if (ready) "connected" else "disconnected",
-    });
+    }, .{ .emit_null_optional_fields = false });
     try res.json(body);
 }

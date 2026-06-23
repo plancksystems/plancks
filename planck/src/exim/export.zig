@@ -234,9 +234,11 @@ pub const Exporter = struct {
             if (entry.tombstone) continue;
             if (!self.matchesFilter(entry.value)) continue;
 
-            if (doc_count > 0) try fw.writeAll(",\n");
+            const json = bson.toJson(self.allocator, entry.value) catch continue;
+            defer self.allocator.free(json);
 
-            try self.writeBsonAsJson(&fw, entry.value, 1);
+            if (doc_count > 0) try fw.writeAll(",\n");
+            try fw.writeAll(json);
             doc_count += 1;
         }
 
@@ -298,24 +300,16 @@ pub const Exporter = struct {
     }
 
     fn sampleDocument(self: *Exporter, bson_data: []const u8, field_names: *std.ArrayList([]const u8), subdoc_fields: *std.StringHashMap(void), has_subdocs: *bool) !void {
-        if (bson_data.len < 5) return;
+        var doc = BsonDocument.init(self.allocator, bson_data, false) catch return;
+        defer doc.deinit();
 
-        const doc_size = std.mem.readInt(i32, bson_data[0..4], .little);
-        const doc_end: usize = @intCast(doc_size);
-        var pos: usize = 4;
+        const names = doc.getFieldNames(self.allocator) catch return;
+        defer {
+            for (names) |n| self.allocator.free(n);
+            self.allocator.free(names);
+        }
 
-        while (pos < doc_end - 1) {
-            const tag_byte = bson_data[pos];
-            if (tag_byte == 0) break;
-
-            pos += 1;
-
-            const name_start = pos;
-            while (pos < bson_data.len and bson_data[pos] != 0) pos += 1;
-            if (pos >= bson_data.len) break;
-            const name = bson_data[name_start..pos];
-            pos += 1;
-
+        for (names) |name| {
             var found = false;
             for (field_names.items) |existing| {
                 if (std.mem.eql(u8, existing, name)) {
@@ -324,36 +318,35 @@ pub const Exporter = struct {
                 }
             }
             if (!found) {
-                const name_copy = try self.allocator.dupe(u8, name);
-                try field_names.append(self.allocator, name_copy);
+                try field_names.append(self.allocator, try self.allocator.dupe(u8, name));
             }
 
-            if (tag_byte == 0x03) {
-                has_subdocs.* = true;
-                if (!subdoc_fields.contains(name)) {
-                    try subdoc_fields.put(try self.allocator.dupe(u8, name), {});
-                }
-            } else if (tag_byte == 0x04) {
-                if (arrayContainsDocuments(bson_data, pos)) {
+            var val = (doc.getField(name) catch null) orelse continue;
+            defer val.deinit(self.allocator);
+
+            switch (val) {
+                .document => {
                     has_subdocs.* = true;
                     if (!subdoc_fields.contains(name)) {
                         try subdoc_fields.put(try self.allocator.dupe(u8, name), {});
                     }
-                }
+                },
+                .array => |arr| {
+                    var first = (arr.get(0) catch null) orelse continue;
+                    defer first.deinit(self.allocator);
+                    switch (first) {
+                        .document => {
+                            has_subdocs.* = true;
+                            if (!subdoc_fields.contains(name)) {
+                                try subdoc_fields.put(try self.allocator.dupe(u8, name), {});
+                            }
+                        },
+                        else => {},
+                    }
+                },
+                else => {},
             }
-
-            skipBsonValue(bson_data, tag_byte, &pos);
         }
-    }
-
-    fn arrayContainsDocuments(data: []const u8, array_start: usize) bool {
-        if (array_start + 4 >= data.len) return false;
-        const arr_size = std.mem.readInt(i32, data[array_start..][0..4], .little);
-        if (arr_size < 5) return false;
-
-        const first_elem_pos = array_start + 4;
-        if (first_elem_pos >= data.len) return false;
-        return data[first_elem_pos] == 0x03;
     }
 
     fn exportCsvSimple(self: *Exporter, store_id: u16, file_path: []const u8, field_names: *std.ArrayList([]const u8)) ![]const u8 {
@@ -586,161 +579,6 @@ pub const Exporter = struct {
                 try fw.writeAll(pk);
             }
             try fw.writeAll("]\n");
-        }
-    }
-
-    fn writeBsonAsJson(self: *Exporter, fw: *FileWriter, bson_data: []const u8, indent: u32) anyerror!void {
-        if (bson_data.len < 5) return;
-
-        const doc_size = std.mem.readInt(i32, bson_data[0..4], .little);
-        const doc_end: usize = @intCast(doc_size);
-        var pos: usize = 4;
-        var first = true;
-
-        try writeIndent(fw, indent - 1);
-        try fw.writeAll("{\n");
-
-        while (pos < doc_end - 1) {
-            const tag_byte = bson_data[pos];
-            if (tag_byte == 0) break;
-
-            pos += 1;
-
-            const name_start = pos;
-            while (pos < bson_data.len and bson_data[pos] != 0) pos += 1;
-            if (pos >= bson_data.len) break;
-            const name = bson_data[name_start..pos];
-            pos += 1;
-
-            if (!first) try fw.writeAll(",\n");
-            first = false;
-
-            try writeIndent(fw, indent);
-            try fw.writeByte('"');
-            try writeJsonEscaped(fw, name);
-            try fw.writeAll("\": ");
-
-            try self.writeJsonValue(fw, bson_data, tag_byte, &pos, indent);
-        }
-
-        try fw.writeByte('\n');
-        try writeIndent(fw, indent - 1);
-        try fw.writeByte('}');
-    }
-
-    fn writeJsonValue(self: *Exporter, fw: *FileWriter, data: []const u8, tag: u8, pos: *usize, indent: u32) anyerror!void {
-        switch (tag) {
-            0x01 => {
-                const val = std.mem.readInt(u64, data[pos.*..][0..8], .little);
-                const f: f64 = @bitCast(val);
-                pos.* += 8;
-                try fw.print("{d}", .{f});
-            },
-            0x02 => {
-                const str_len = std.mem.readInt(i32, data[pos.*..][0..4], .little);
-                pos.* += 4;
-                const s = data[pos.* .. pos.* + @as(usize, @intCast(str_len - 1))];
-                pos.* += @intCast(str_len);
-                try fw.writeByte('"');
-                try writeJsonEscaped(fw, s);
-                try fw.writeByte('"');
-            },
-            0x03 => {
-                const sub_start = pos.*;
-                const sub_size = std.mem.readInt(i32, data[pos.*..][0..4], .little);
-                const sub_data = data[sub_start .. sub_start + @as(usize, @intCast(sub_size))];
-                pos.* += @intCast(sub_size);
-                try self.writeBsonAsJson(fw, sub_data, indent + 1);
-            },
-            0x04 => {
-                const arr_start = pos.*;
-                const arr_size = std.mem.readInt(i32, data[pos.*..][0..4], .little);
-                const arr_end = arr_start + @as(usize, @intCast(arr_size));
-                pos.* = arr_start + 4;
-
-                try fw.writeAll("[\n");
-                var arr_first = true;
-
-                while (pos.* < arr_end - 1) {
-                    const elem_tag = data[pos.*];
-                    if (elem_tag == 0) break;
-                    pos.* += 1;
-
-                    while (pos.* < data.len and data[pos.*] != 0) pos.* += 1;
-                    if (pos.* < data.len) pos.* += 1;
-
-                    if (!arr_first) try fw.writeAll(",\n");
-                    arr_first = false;
-
-                    try writeIndent(fw, indent + 1);
-                    try self.writeJsonValue(fw, data, elem_tag, pos, indent + 1);
-                }
-
-                try fw.writeByte('\n');
-                try writeIndent(fw, indent);
-                try fw.writeByte(']');
-                pos.* = arr_end;
-            },
-            0x05 => {
-                const bin_len = std.mem.readInt(i32, data[pos.*..][0..4], .little);
-                pos.* += 4;
-                pos.* += 1;
-                const bin_data_len = @as(usize, @intCast(bin_len));
-                pos.* += bin_data_len;
-                try fw.print("\"<binary:{d} bytes>\"", .{bin_data_len});
-            },
-            0x07 => {
-                try fw.writeByte('"');
-                for (data[pos.* .. pos.* + 12]) |b| {
-                    try fw.print("{x:0>2}", .{b});
-                }
-                try fw.writeByte('"');
-                pos.* += 12;
-            },
-            0x08 => {
-                try fw.writeAll(if (data[pos.*] != 0) "true" else "false");
-                pos.* += 1;
-            },
-            0x09 => {
-                const ms = std.mem.readInt(i64, data[pos.*..][0..8], .little);
-                pos.* += 8;
-                try fw.print("{d}", .{ms});
-            },
-            0x0A => {
-                try fw.writeAll("null");
-            },
-            0x0B => {
-                try fw.writeByte('"');
-                const pat_start = pos.*;
-                while (pos.* < data.len and data[pos.*] != 0) pos.* += 1;
-                try fw.writeAll("/");
-                try fw.writeAll(data[pat_start..pos.*]);
-                try fw.writeAll("/");
-                pos.* += 1;
-                const opt_start = pos.*;
-                while (pos.* < data.len and data[pos.*] != 0) pos.* += 1;
-                try fw.writeAll(data[opt_start..pos.*]);
-                pos.* += 1;
-                try fw.writeByte('"');
-            },
-            0x10 => {
-                const val = std.mem.readInt(i32, data[pos.*..][0..4], .little);
-                pos.* += 4;
-                try fw.print("{d}", .{val});
-            },
-            0x11, 0x12 => {
-                const val = std.mem.readInt(i64, data[pos.*..][0..8], .little);
-                pos.* += 8;
-                try fw.print("{d}", .{val});
-            },
-            0x13 => {
-                try fw.writeAll("\"<decimal128>\"");
-                pos.* += 16;
-            },
-            else => {
-                try fw.writeAll("null");
-                skipBsonValue(data, tag, pos);
-            },
         }
     }
 
@@ -978,31 +816,6 @@ fn writeChildRow(allocator: Allocator, fw: *FileWriter, parent_key: u128, parent
     try fw.writeByte('\n');
 }
 
-fn writeIndent(fw: *FileWriter, level: u32) !void {
-    for (0..level) |_| {
-        try fw.writeAll("  ");
-    }
-}
-
-fn writeJsonEscaped(fw: *FileWriter, s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '"' => try fw.writeAll("\\\""),
-            '\\' => try fw.writeAll("\\\\"),
-            '\n' => try fw.writeAll("\\n"),
-            '\r' => try fw.writeAll("\\r"),
-            '\t' => try fw.writeAll("\\t"),
-            else => {
-                if (c < 0x20) {
-                    try fw.print("\\u{x:0>4}", .{c});
-                } else {
-                    try fw.writeByte(c);
-                }
-            },
-        }
-    }
-}
-
 fn writeValueAsCsv(allocator: Allocator, fw: *FileWriter, val: Value) !void {
     switch (val) {
         .double => |d| try fw.print("{d}", .{d}),
@@ -1087,39 +900,4 @@ fn formatValueToString(allocator: Allocator, val: Value) ![]const u8 {
         },
         else => try allocator.dupe(u8, ""),
     };
-}
-
-fn skipBsonValue(data: []const u8, tag: u8, pos: *usize) void {
-    switch (tag) {
-        0x01 => pos.* += 8,
-        0x02 => {
-            if (pos.* + 4 > data.len) return;
-            const str_len = std.mem.readInt(i32, data[pos.*..][0..4], .little);
-            pos.* += 4 + @as(usize, @intCast(str_len));
-        },
-        0x03, 0x04 => {
-            if (pos.* + 4 > data.len) return;
-            const size = std.mem.readInt(i32, data[pos.*..][0..4], .little);
-            pos.* += @intCast(size);
-        },
-        0x05 => {
-            if (pos.* + 4 > data.len) return;
-            const bin_len = std.mem.readInt(i32, data[pos.*..][0..4], .little);
-            pos.* += 4 + 1 + @as(usize, @intCast(bin_len));
-        },
-        0x07 => pos.* += 12,
-        0x08 => pos.* += 1,
-        0x09 => pos.* += 8,
-        0x0A => {},
-        0x0B => {
-            while (pos.* < data.len and data[pos.*] != 0) pos.* += 1;
-            if (pos.* < data.len) pos.* += 1;
-            while (pos.* < data.len and data[pos.*] != 0) pos.* += 1;
-            if (pos.* < data.len) pos.* += 1;
-        },
-        0x10 => pos.* += 4,
-        0x11, 0x12 => pos.* += 8,
-        0x13 => pos.* += 16,
-        else => {},
-    }
 }

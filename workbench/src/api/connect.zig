@@ -8,7 +8,6 @@ const DisconnectResponse = @import("../model/responses/connect.zig").DisconnectR
 const AppServices = @import("../tasks/services.zig").AppServices;
 const WbStorage = @import("../tasks/storage.zig").WbStorage;
 const Ctx = @import("../ctx.zig").Ctx;
-const json = @import("json.zig");
 
 const log = std.log.scoped(.api_connect);
 
@@ -37,10 +36,10 @@ pub fn handleConnect(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *c
         }
     }
 
-    const out = try json.serialize(allocator, ConnectResponse{
+    const out = try std.json.Stringify.valueAlloc(allocator, ConnectResponse{
         .success = false,
         .@"error" = "Service name is required",
-    });
+    }, .{ .emit_null_optional_fields = false });
     try res.json(out);
 }
 
@@ -81,20 +80,20 @@ fn doConnect(services: *AppServices, allocator: std.mem.Allocator, service_name:
     } else null;
 
     if (idx == null) {
-        return json.serialize(allocator, ConnectResponse{
+        return std.json.Stringify.valueAlloc(allocator, ConnectResponse{
             .success = false,
             .@"error" = "Service not found",
-        });
+        }, .{ .emit_null_optional_fields = false });
     }
 
     const result = services.connectDb(idx.?, effective_uid, effective_key) catch {
-        return json.serialize(allocator, ConnectResponse{
+        return std.json.Stringify.valueAlloc(allocator, ConnectResponse{
             .success = false,
             .@"error" = "Connection failed",
-        });
+        }, .{ .emit_null_optional_fields = false });
     };
 
-    return json.serialize(allocator, ConnectResponse{ .success = true, .role = result.role });
+    return std.json.Stringify.valueAlloc(allocator, ConnectResponse{ .success = true, .role = result.role }, .{ .emit_null_optional_fields = false });
 }
 
 pub fn handleDisconnect(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req: *const schnell.Request, res: *schnell.Response) anyerror!void {
@@ -107,6 +106,6 @@ pub fn handleDisconnect(ctx_ptr: ?*anyopaque, allocator: std.mem.Allocator, req:
         ctx.services.disconnectDb(@intCast(idx));
     }
 
-    const out = try json.serialize(allocator, DisconnectResponse{ .success = true });
+    const out = try std.json.Stringify.valueAlloc(allocator, DisconnectResponse{ .success = true }, .{ .emit_null_optional_fields = false });
     try res.json(out);
 }

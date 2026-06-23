@@ -778,25 +778,25 @@ pub const Db = struct {
     fn convertFieldValue(fv: FieldValue, target_type: proto.FieldType) FieldValue {
         return switch (target_type) {
             .U32 => switch (fv) {
-                .i64_val => |v| FieldValue{ .u32_val = @intCast(v) },
-                .i32_val => |v| FieldValue{ .u32_val = @intCast(v) },
-                .u64_val => |v| FieldValue{ .u32_val = @intCast(v) },
+                .i64_val => |v| FieldValue{ .u32_val = std.math.lossyCast(u32, v) },
+                .i32_val => |v| FieldValue{ .u32_val = std.math.lossyCast(u32, v) },
+                .u64_val => |v| FieldValue{ .u32_val = std.math.lossyCast(u32, v) },
                 else => fv,
             },
             .I32 => switch (fv) {
-                .i64_val => |v| FieldValue{ .i32_val = @intCast(v) },
-                .u32_val => |v| FieldValue{ .i32_val = @intCast(v) },
-                .u64_val => |v| FieldValue{ .i32_val = @intCast(v) },
+                .i64_val => |v| FieldValue{ .i32_val = std.math.lossyCast(i32, v) },
+                .u32_val => |v| FieldValue{ .i32_val = std.math.lossyCast(i32, v) },
+                .u64_val => |v| FieldValue{ .i32_val = std.math.lossyCast(i32, v) },
                 else => fv,
             },
             .U64 => switch (fv) {
-                .i64_val => |v| FieldValue{ .u64_val = @intCast(v) },
-                .i32_val => |v| FieldValue{ .u64_val = @intCast(v) },
+                .i64_val => |v| FieldValue{ .u64_val = std.math.lossyCast(u64, v) },
+                .i32_val => |v| FieldValue{ .u64_val = std.math.lossyCast(u64, v) },
                 .u32_val => |v| FieldValue{ .u64_val = v },
                 else => fv,
             },
             .I64 => switch (fv) {
-                .u64_val => |v| FieldValue{ .i64_val = @intCast(v) },
+                .u64_val => |v| FieldValue{ .i64_val = std.math.lossyCast(i64, v) },
                 .i32_val => |v| FieldValue{ .i64_val = v },
                 .u32_val => |v| FieldValue{ .i64_val = v },
                 else => fv,
@@ -818,11 +818,11 @@ pub const Db = struct {
             vlog.header.total_bytes += bytes_written;
             vlog.header.live_bytes += bytes_written;
         } else if (op == .delete) {
-            vlog.header.live_bytes -= bytes_erased;
+            vlog.header.live_bytes -|= bytes_erased;
             vlog.header.dead_bytes += bytes_erased;
         } else if (op == .update) {
             vlog.header.total_bytes += bytes_written;
-            vlog.header.live_bytes += bytes_written;
+            vlog.header.live_bytes = (vlog.header.live_bytes + bytes_written) -| bytes_erased;
             vlog.header.dead_bytes += bytes_erased;
         }
 
@@ -1419,11 +1419,79 @@ pub const Db = struct {
         return result;
     }
 
-
     pub fn garbageCollect(self: *Db, vlog_ids: []const u16) !void {
         for (vlog_ids) |vlog_id| {
             try self.garbageCollectSingle(vlog_id);
         }
+    }
+
+    pub fn repairInterruptedGc(allocator: Allocator, vlog_path: []const u8, index_path: []const u8, io: Io) !usize {
+        var vlog_dir = Dir.openDir(.cwd(), io, vlog_path, .{ .iterate = true }) catch return 0;
+        defer vlog_dir.close(io);
+
+        var markers: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (markers.items) |m| allocator.free(m);
+            markers.deinit(allocator);
+        }
+        var orphans: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (orphans.items) |m| allocator.free(m);
+            orphans.deinit(allocator);
+        }
+        {
+            var it = vlog_dir.iterate();
+            while (it.next(io) catch null) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.startsWith(u8, entry.name, "gc_")) continue;
+                if (std.mem.endsWith(u8, entry.name, ".inprogress")) {
+                    try markers.append(allocator, try allocator.dupe(u8, entry.name));
+                } else {
+                    try orphans.append(allocator, try allocator.dupe(u8, entry.name));
+                }
+            }
+        }
+
+        // No marker => no swap had started, so every gc_* shadow is a leftover from
+        // a build phase that crashed before the commit. The real {id}.vlog / primary.idx
+        // are untouched and authoritative, so the shadows are pure orphans. This runs at
+        // startup only (GC never runs concurrently), and uses collect-then-delete so a
+        // directory is never mutated mid-iteration. Returns 0: no swaps were rolled forward.
+        if (markers.items.len == 0) {
+            for (orphans.items) |name| Dir.deleteFile(vlog_dir, io, name) catch {};
+
+            var idx_dir = Dir.openDir(.cwd(), io, index_path, .{ .iterate = true }) catch return 0;
+            defer idx_dir.close(io);
+            var idx_orphans: std.ArrayList([]const u8) = .empty;
+            defer {
+                for (idx_orphans.items) |m| allocator.free(m);
+                idx_orphans.deinit(allocator);
+            }
+            {
+                var it = idx_dir.iterate();
+                while (it.next(io) catch null) |entry| {
+                    if (entry.kind == .file and std.mem.startsWith(u8, entry.name, "gc_")) {
+                        try idx_orphans.append(allocator, try allocator.dupe(u8, entry.name));
+                    }
+                }
+            }
+            for (idx_orphans.items) |name| Dir.deleteFile(idx_dir, io, name) catch {};
+            return 0;
+        }
+
+        const index_dir = Dir.openDir(.cwd(), io, index_path, .{}) catch return 0;
+
+        for (markers.items) |marker| {
+            const id_str = marker["gc_".len .. marker.len - ".inprogress".len];
+            var sbuf: [64]u8 = undefined;
+            var obuf: [64]u8 = undefined;
+            const shadow_fn = std.fmt.bufPrint(&sbuf, "gc_{s}.vlog", .{id_str}) catch continue;
+            const orig_fn = std.fmt.bufPrint(&obuf, "{s}.vlog", .{id_str}) catch continue;
+            Dir.rename(vlog_dir, shadow_fn, vlog_dir, orig_fn, io) catch {};
+        }
+        Dir.rename(index_dir, "gc_primary.idx", index_dir, "primary.idx", io) catch {};
+        for (markers.items) |marker| Dir.deleteFile(vlog_dir, io, marker) catch {};
+        return markers.items.len;
     }
 
     fn garbageCollectSingle(self: *Db, vlog_id: u16) !void {
@@ -1495,23 +1563,26 @@ pub const Db = struct {
         shadow_index.deinit();
 
         const vlog_dir = try Dir.openDir(.cwd(), self.io, self.config.paths.vlog, .{});
-        try Dir.createDirPath(vlog_dir, self.io, "collected");
-        try Dir.createDirPath(index_dir, self.io, "collected");
-        const vlog_collected = try Dir.openDir(vlog_dir, self.io, "collected", .{});
-        const idx_collected = try Dir.openDir(index_dir, self.io, "collected", .{});
 
         var fname_buf: [64]u8 = undefined;
         const orig_vlog_fn = try std.fmt.bufPrint(&fname_buf, "{d}.vlog", .{vlog_id});
         var sfname_buf: [64]u8 = undefined;
         const shadow_vlog_fn = try std.fmt.bufPrint(&sfname_buf, "gc_{d}.vlog", .{vlog_id});
+        var marker_buf: [64]u8 = undefined;
+        const marker_fn = try std.fmt.bufPrint(&marker_buf, "gc_{d}.inprogress", .{vlog_id});
 
         self.primary_index.deinit();
 
-        try Dir.rename(vlog_dir, orig_vlog_fn, vlog_collected, orig_vlog_fn, self.io);
-        try Dir.rename(index_dir, "primary.idx", idx_collected, "primary.idx", self.io);
-
+        // Crash-safe swap: the marker lets startup roll these renames forward if we crash
+        // between them. rename() replaces atomically and recovery reads only the final
+        // names, so a crash can never leave a missing primary.idx or {id}.vlog.
+        {
+            const mf = try Dir.createFile(vlog_dir, self.io, marker_fn, .{ .truncate = true });
+            mf.close(self.io);
+        }
         try Dir.rename(vlog_dir, shadow_vlog_fn, vlog_dir, orig_vlog_fn, self.io);
         try Dir.rename(index_dir, "gc_primary.idx", index_dir, "primary.idx", self.io);
+        Dir.deleteFile(vlog_dir, self.io, marker_fn) catch {};
 
         self.primary_index.* = try Index(u128, u64).init(self.allocator, .{
             .dir_path = self.config.paths.index,
@@ -1606,3 +1677,84 @@ pub const Db = struct {
         }
     }
 };
+
+test "repairInterruptedGc rolls an interrupted GC swap forward" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const root = ".gc_repair_test";
+    const vlog_path = root ++ "/vlogs";
+    const index_path = root ++ "/indexes";
+
+    const cwd = Dir.cwd();
+    cwd.deleteTree(io, root) catch {};
+    defer cwd.deleteTree(io, root) catch {};
+
+    try cwd.createDirPath(io, vlog_path);
+    try cwd.createDirPath(io, index_path);
+
+    var vlog_dir = try cwd.openDir(io, vlog_path, .{});
+    defer vlog_dir.close(io);
+    var index_dir = try cwd.openDir(io, index_path, .{});
+    defer index_dir.close(io);
+
+    try vlog_dir.writeFile(io, .{ .sub_path = "7.vlog", .data = "OLD-VLOG" });
+    try index_dir.writeFile(io, .{ .sub_path = "primary.idx", .data = "OLD-IDX" });
+    try vlog_dir.writeFile(io, .{ .sub_path = "gc_7.vlog", .data = "NEW-VLOG" });
+    try index_dir.writeFile(io, .{ .sub_path = "gc_primary.idx", .data = "NEW-IDX" });
+    try vlog_dir.writeFile(io, .{ .sub_path = "gc_7.inprogress", .data = "" });
+
+    try std.testing.expectEqual(@as(usize, 1), try Db.repairInterruptedGc(allocator, vlog_path, index_path, io));
+
+    const vlog_after = try vlog_dir.readFileAlloc(io, "7.vlog", allocator, .unlimited);
+    defer allocator.free(vlog_after);
+    try std.testing.expectEqualStrings("NEW-VLOG", vlog_after);
+
+    const idx_after = try index_dir.readFileAlloc(io, "primary.idx", allocator, .unlimited);
+    defer allocator.free(idx_after);
+    try std.testing.expectEqualStrings("NEW-IDX", idx_after);
+
+    try std.testing.expectError(error.FileNotFound, vlog_dir.access(io, "gc_7.vlog", .{}));
+    try std.testing.expectError(error.FileNotFound, vlog_dir.access(io, "gc_7.inprogress", .{}));
+    try std.testing.expectError(error.FileNotFound, index_dir.access(io, "gc_primary.idx", .{}));
+}
+
+test "repairInterruptedGc deletes orphaned shadow files when no marker exists" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const root = ".gc_orphan_test";
+    const vlog_path = root ++ "/vlogs";
+    const index_path = root ++ "/indexes";
+
+    const cwd = Dir.cwd();
+    cwd.deleteTree(io, root) catch {};
+    defer cwd.deleteTree(io, root) catch {};
+
+    try cwd.createDirPath(io, vlog_path);
+    try cwd.createDirPath(io, index_path);
+
+    var vlog_dir = try cwd.openDir(io, vlog_path, .{});
+    defer vlog_dir.close(io);
+    var index_dir = try cwd.openDir(io, index_path, .{});
+    defer index_dir.close(io);
+
+    // Build-phase crash: shadows exist but NO marker, so the real files are authoritative.
+    try vlog_dir.writeFile(io, .{ .sub_path = "7.vlog", .data = "OLD-VLOG" });
+    try index_dir.writeFile(io, .{ .sub_path = "primary.idx", .data = "OLD-IDX" });
+    try vlog_dir.writeFile(io, .{ .sub_path = "gc_7.vlog", .data = "PARTIAL-VLOG" });
+    try index_dir.writeFile(io, .{ .sub_path = "gc_primary.idx", .data = "PARTIAL-IDX" });
+
+    // No swaps rolled forward.
+    try std.testing.expectEqual(@as(usize, 0), try Db.repairInterruptedGc(allocator, vlog_path, index_path, io));
+
+    // Orphans removed.
+    try std.testing.expectError(error.FileNotFound, vlog_dir.access(io, "gc_7.vlog", .{}));
+    try std.testing.expectError(error.FileNotFound, index_dir.access(io, "gc_primary.idx", .{}));
+
+    // Real files untouched.
+    const vlog_after = try vlog_dir.readFileAlloc(io, "7.vlog", allocator, .unlimited);
+    defer allocator.free(vlog_after);
+    try std.testing.expectEqualStrings("OLD-VLOG", vlog_after);
+    const idx_after = try index_dir.readFileAlloc(io, "primary.idx", allocator, .unlimited);
+    defer allocator.free(idx_after);
+    try std.testing.expectEqualStrings("OLD-IDX", idx_after);
+}

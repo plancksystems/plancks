@@ -2,10 +2,6 @@ address: "0.0.0.0"
 primary: true
 max_sessions: 128
 port: 0
-tls:
-  enabled: false
-  cert_file: ""
-  key_file: ""
 session:
   idle_timeout_ms: 604800000
 buffers:

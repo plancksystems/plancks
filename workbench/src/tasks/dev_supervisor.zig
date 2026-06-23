@@ -207,3 +207,17 @@ test "buildShellCmd: argv with single quote escaped" {
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("exec '/bin/echo' 'it'\\''s fine' >> '/tmp/o' 2>> '/tmp/e'", out);
 }
+
+test "buildShellCmd: empty argv still wires the redirects" {
+    const argv = [_][]const u8{};
+    const out = try buildShellCmd(testing.allocator, &argv, "/tmp/o", "/tmp/e");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("exec >> '/tmp/o' 2>> '/tmp/e'", out);
+}
+
+test "buildShellCmd: an argument with spaces stays one token" {
+    const argv = [_][]const u8{ "run", "a b c" };
+    const out = try buildShellCmd(testing.allocator, &argv, "/o", "/e");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("exec 'run' 'a b c' >> '/o' 2>> '/e'", out);
+}

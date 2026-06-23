@@ -24,8 +24,8 @@
             .hash = "utils-0.1.0-Ldej_uoMAgDQwHU3AW65leDiU91ICJlDBmzvjobZhGWr",
         },
         .schnell = .{
-            .url = "https://github.com/plancksystems/schnell-zig/archive/refs/tags/v0.1.0.tar.gz",
-            .hash = "schnell-0.1.0-mz-7QMe2BQB4lXCb45htDcUQNUGJvmVvA_7crUomTkiA",
+            .url = "https://github.com/plancksystems/schnell-zig/archive/refs/tags/v0.2.0.tar.gz",
+            .hash = "schnell-0.1.0-mz-7QLDJBQDZt7ojEfwgTZP0SZbMN08-k5071efnkYzH",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src" },

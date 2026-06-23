@@ -254,3 +254,13 @@ pub fn main(init: std.process.Init) !void {
     }
     try services.shutdownDeployedApps();
 }
+
+test {
+    _ = @import("tasks/paths.zig");
+    _ = @import("tasks/config.zig");
+    _ = @import("tasks/bson_util.zig");
+    _ = @import("tasks/storage.zig");
+    _ = @import("tasks/services.zig");
+    _ = @import("tasks/scheduler.zig");
+    _ = @import("tasks/dev_supervisor.zig");
+}

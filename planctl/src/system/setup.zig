@@ -5,51 +5,6 @@ const Io = std.Io;
 const ServiceControl = utils.ServiceControl;
 const labels = utils.labels;
 
-const Role = enum {
-    standalone,
-    command,
-    query,
-
-    pub fn toString(self: Role) []const u8 {
-        return switch (self) {
-            .standalone => "standalone",
-            .command => "command",
-            .query => "query",
-        };
-    }
-
-    pub fn fromString(role: []const u8) !Role {
-        if (std.ascii.eqlIgnoreCase(role, "standalone")) return .standalone;
-        if (std.ascii.eqlIgnoreCase(role, "command")) return .command;
-        if (std.ascii.eqlIgnoreCase(role, "query")) return .query;
-        return error.InvalidRole;
-    }
-};
-
-const Mode = enum {
-    dev,
-    prod,
-
-    pub fn toString(self: Mode) []const u8 {
-        return switch (self) {
-            .dev => "dev",
-            .prod => "prod",
-        };
-    }
-};
-
-fn modeFromArgs(args: []const [:0]const u8) Mode {
-    var i: usize = 0;
-    while (i + 1 < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--mode")) {
-            const v = args[i + 1];
-            if (std.ascii.eqlIgnoreCase(v, "dev")) return .dev;
-            if (std.ascii.eqlIgnoreCase(v, "prod")) return .prod;
-        }
-    }
-    return if (comptime builtin.target.os.tag == .macos) .dev else .prod;
-}
-
 const Action = enum { install, uninstall, start, stop, upgrade };
 
 const Service = struct {
@@ -161,8 +116,6 @@ fn install(allocator: std.mem.Allocator, io: Io, opts: *InstallOpts) !void {
         \\base_dir: "{s}"
         \\backup_dir: ""
         \\max_sessions: 128
-        \\tls:
-        \\  enabled: false
         \\session:
         \\  idle_timeout_ms: 0
         \\buffers:
@@ -206,20 +159,6 @@ fn install(allocator: std.mem.Allocator, io: Io, opts: *InstallOpts) !void {
         \\  sync_interval_ms: 5000
         \\  address: "0.0.0.0"
         \\  port: 0
-        \\wasm:
-        \\  enabled: false
-        \\  min_instances: 2
-        \\  max_instances: 8
-        \\  autoscale: false
-        \\  http:
-        \\      port: 3000
-        \\      max_connections: 10000
-        \\      max_header_size: 8192
-        \\      max_body_size: 1048576
-        \\      response_buffer_size: 65536
-        \\      idle_timeout_ms: 30000
-        \\      max_requests_per_connection: 10000
-        \\      drain_timeout_ms: 5000
         \\
     , .{
         opts.system,
@@ -534,14 +473,4 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8, home: []con
             else => std.debug.print("  system start is only implemented for macOS so far.\n", .{}),
         }
     }
-
 }
-
-
-
-
-
-
-
-
-

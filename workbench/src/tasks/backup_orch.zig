@@ -168,27 +168,14 @@ fn writeBackupRecord(
     try doc.putInt64("size_bytes", @intCast(size_bytes));
     try doc.putInt64("created_at_ms", created_at_ms);
 
-    var arr_buf: std.ArrayList(u8) = .empty;
-    defer arr_buf.deinit(allocator);
-    try arr_buf.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
+    var arr_doc = planck.bson.BsonDocument.empty(allocator);
+    defer arr_doc.deinit();
     for (service_names, 0..) |n, idx| {
         var idx_buf: [16]u8 = undefined;
         const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{idx}) catch "0";
-        try arr_buf.append(allocator, 0x02);
-        try arr_buf.appendSlice(allocator, idx_str);
-        try arr_buf.append(allocator, 0);
-        const slen: i32 = @intCast(n.len + 1);
-        var len_bytes: [4]u8 = undefined;
-        std.mem.writeInt(i32, &len_bytes, slen, .little);
-        try arr_buf.appendSlice(allocator, &len_bytes);
-        try arr_buf.appendSlice(allocator, n);
-        try arr_buf.append(allocator, 0);
+        try arr_doc.putString(idx_str, n);
     }
-    try arr_buf.append(allocator, 0);
-    const new_size: i32 = @intCast(arr_buf.items.len);
-    @memcpy(arr_buf.items[0..4], std.mem.asBytes(&std.mem.nativeToLittle(i32, new_size)));
-    const arr = planck.bson.BsonArray.init(allocator, arr_buf.items);
-    try doc.putArray("services", arr);
+    try doc.putArray("services", planck.bson.BsonArray.init(allocator, arr_doc.toBytes()));
 
     _ = try storage.put(WbStorage.STORE_BACKUPS, doc.toBytes());
     storage.flush();

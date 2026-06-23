@@ -23,12 +23,19 @@ pub const Service = struct {
     description: []const u8 = "",
     route: []const u8 = "",
 
+    tls: struct {
+        enabled: bool = false,
+        cert_file: []const u8 = "",
+        key_file: []const u8 = "",
+    } = .{},
+
+    http: schnell.ServerConfig = .{},
+
     wasm: struct {
         enabled: bool = false,
         min_instances: u16 = 2,
         max_instances: u16 = 8,
         autoscale: bool = false,
-        http: schnell.ServerConfig = .{},
     } = .{},
 
     upstreams: []const Upstream = &.{},
@@ -59,11 +66,21 @@ pub const Service = struct {
         if (parsed.route.len > 0) svc.route = try allocator.dupe(u8, parsed.route);
 
         svc.wasm = parsed.wasm;
-        if (parsed.wasm.http.host.len > 0) {
-            svc.wasm.http.host = try allocator.dupe(u8, parsed.wasm.http.host);
+
+        svc.tls = parsed.tls;
+        if (parsed.tls.cert_file.len > 0) {
+            svc.tls.cert_file = try allocator.dupe(u8, parsed.tls.cert_file);
         }
-        if (parsed.wasm.http.static_dir) |sd| {
-            svc.wasm.http.static_dir = try allocator.dupe(u8, sd);
+        if (parsed.tls.key_file.len > 0) {
+            svc.tls.key_file = try allocator.dupe(u8, parsed.tls.key_file);
+        }
+
+        svc.http = parsed.http;
+        if (parsed.http.host.len > 0) {
+            svc.http.host = try allocator.dupe(u8, parsed.http.host);
+        }
+        if (parsed.http.static_dir) |sd| {
+            svc.http.static_dir = try allocator.dupe(u8, sd);
         }
 
         if (parsed.upstreams.len > 0) {
@@ -87,8 +104,10 @@ pub const Service = struct {
         if (self.name.len > 0) allocator.free(self.name);
         if (self.description.len > 0) allocator.free(self.description);
         if (self.route.len > 0) allocator.free(self.route);
-        if (self.wasm.http.host.len > 0) allocator.free(self.wasm.http.host);
-        if (self.wasm.http.static_dir) |sd| {
+        if (self.tls.cert_file.len > 0) allocator.free(self.tls.cert_file);
+        if (self.tls.key_file.len > 0) allocator.free(self.tls.key_file);
+        if (self.http.host.len > 0) allocator.free(self.http.host);
+        if (self.http.static_dir) |sd| {
             if (sd.len > 0) allocator.free(sd);
         }
         for (self.upstreams) |u| {
@@ -108,17 +127,23 @@ pub const Service = struct {
         if (self.description.len > 0) try wr.print("description: \"{s}\"\n", .{self.description});
         if (self.route.len > 0) try wr.print("route: \"{s}\"\n", .{self.route});
 
+        try wr.writeAll("tls:\n");
+        try wr.print("  enabled: {s}\n", .{if (self.tls.enabled) "true" else "false"});
+        try wr.print("  cert_file: \"{s}\"\n", .{self.tls.cert_file});
+        try wr.print("  key_file: \"{s}\"\n", .{self.tls.key_file});
+
+        try wr.writeAll("http:\n");
+        try wr.print("  host: \"{s}\"\n", .{self.http.host});
+        try wr.print("  port: {d}\n", .{self.http.port});
+        try wr.print("  max_connections: {d}\n", .{self.http.max_connections});
+        try wr.print("  max_body_size: {d}\n", .{self.http.max_body_size});
+        try wr.print("  idle_timeout_ms: {d}\n", .{self.http.idle_timeout_ms});
+
         try wr.writeAll("wasm:\n");
         try wr.print("  enabled: {s}\n", .{if (self.wasm.enabled) "true" else "false"});
         try wr.print("  min_instances: {d}\n", .{self.wasm.min_instances});
         try wr.print("  max_instances: {d}\n", .{self.wasm.max_instances});
         try wr.print("  autoscale: {s}\n", .{if (self.wasm.autoscale) "true" else "false"});
-        try wr.writeAll("  http:\n");
-        try wr.print("    host: \"{s}\"\n", .{self.wasm.http.host});
-        try wr.print("    port: {d}\n", .{self.wasm.http.port});
-        try wr.print("    max_connections: {d}\n", .{self.wasm.http.max_connections});
-        try wr.print("    max_body_size: {d}\n", .{self.wasm.http.max_body_size});
-        try wr.print("    idle_timeout_ms: {d}\n", .{self.wasm.http.idle_timeout_ms});
 
         if (self.upstreams.len > 0) {
             try wr.writeAll("upstreams:\n");

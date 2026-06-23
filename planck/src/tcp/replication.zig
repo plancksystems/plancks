@@ -46,6 +46,7 @@ pub const ReplicationManager = struct {
     wal_mutex: Io.Mutex,
 
     ship_bw: Buffer,
+    repl_client: ReplClient,
 
     pub fn init(allocator: Allocator, io: Io, config: *Config) !*ReplicationManager {
         const self = try allocator.create(ReplicationManager);
@@ -83,6 +84,7 @@ pub const ReplicationManager = struct {
             .repl_wal = repl_wal,
             .wal_mutex = Io.Mutex.init,
             .ship_bw = try Buffer.init(allocator, config.buffers.wal),
+            .repl_client = try ReplClient.init(allocator, io, config.buffers.wal),
         };
 
         return self;
@@ -95,6 +97,7 @@ pub const ReplicationManager = struct {
 
         self.repl_wal.deinit();
         self.ship_bw.deinit();
+        self.repl_client.deinit();
         self.allocator.free(self.queue_buf);
         self.allocator.free(self.notify_buf);
         self.allocator.destroy(self);
@@ -270,38 +273,231 @@ pub const ReplicationManager = struct {
     }
 
     fn sendWalFile(self: *ReplicationManager, frames: [][]u8) !void {
-        const address = try net.IpAddress.parseIp4(self.address, self.port);
-        var stream = address.connect(self.io, .{
-            .mode = .stream,
-            .protocol = .tcp,
-        }) catch |err| {
-            log.err("sync: connection failed to {s}:{d}: {}", .{ self.address, self.port, err });
-            return err;
-        };
-        defer stream.close(self.io);
-
-        var read_buf: [512]u8 = undefined;
-        var write_buf: [64 * 1024]u8 = undefined;
-        var reader = stream.reader(self.io, &read_buf);
-        var writer = stream.writer(self.io, &write_buf);
-
-        for (frames) |frame| {
-            var len_buf: [4]u8 = undefined;
-            std.mem.writeInt(u32, &len_buf, @intCast(frame.len), .little);
-            try writer.interface.writeAll(&len_buf);
-            try writer.interface.writeAll(frame);
-            try writer.interface.flush();
-
-            var resp_len_buf: [4]u8 = undefined;
-            try reader.interface.readSliceAll(&resp_len_buf);
-            const resp_len = std.mem.readInt(u32, &resp_len_buf, .little);
-            if (resp_len > 0) {
-                const resp = try self.allocator.alloc(u8, resp_len);
-                defer self.allocator.free(resp);
-                try reader.interface.readSliceAll(resp);
-            }
-        }
+        try self.repl_client.connect(self.config);
+        defer self.repl_client.disconnect();
+        try self.repl_client.ship(frames);
 
         log.info("synced {d} frames to {s}:{d}", .{ frames.len, self.address, self.port });
     }
 };
+
+ 
+const ReplClient = struct {
+    const FRAME_OVERHEAD = 64;
+
+    allocator: Allocator,
+    io: Io,
+    auth_bw: Buffer,
+    read_buf: []u8,
+    write_buf: []u8,
+    stream: ?net.Stream = null,
+    reader: ?net.Stream.Reader = null,
+    writer: ?net.Stream.Writer = null,
+
+    fn init(allocator: Allocator, io: Io, wal_buf_size: usize) !ReplClient {
+        const cap = wal_buf_size + FRAME_OVERHEAD;
+        var auth_bw = try Buffer.init(allocator, cap);
+        errdefer auth_bw.deinit();
+        const read_buf = try allocator.alloc(u8, cap);
+        errdefer allocator.free(read_buf);
+        const write_buf = try allocator.alloc(u8, cap);
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .auth_bw = auth_bw,
+            .read_buf = read_buf,
+            .write_buf = write_buf,
+        };
+    }
+
+    fn deinit(self: *ReplClient) void {
+        self.disconnect();
+        self.auth_bw.deinit();
+        self.allocator.free(self.read_buf);
+        self.allocator.free(self.write_buf);
+    }
+
+    fn connect(self: *ReplClient, config: *const Config) !void {
+        if (config.replica.uid.len == 0 or config.replica.key.len == 0) {
+            log.err("repl: replica.uid/replica.key not configured; refusing to ship unauthenticated", .{});
+            return error.NoReplicationCredentials;
+        }
+        const address = try net.IpAddress.parseIp4(config.replica.address, config.replica.port);
+        const stream = address.connect(self.io, .{ .mode = .stream, .protocol = .tcp }) catch |err| {
+            log.err("repl: connection failed to {s}:{d}: {}", .{ config.replica.address, config.replica.port, err });
+            return err;
+        };
+        errdefer stream.close(self.io);
+        self.stream = stream;
+        self.reader = net.Stream.Reader.init(stream, self.io, self.read_buf);
+        self.writer = net.Stream.Writer.init(stream, self.io, self.write_buf);
+
+        try self.authenticate(config);
+    }
+
+    fn disconnect(self: *ReplClient) void {
+        self.reader = null;
+        self.writer = null;
+        if (self.stream) |*s| {
+            s.close(self.io);
+            self.stream = null;
+        }
+    }
+
+    fn ship(self: *ReplClient, frames: [][]u8) !void {
+        for (frames) |frame| {
+            try self.writeFramed(frame);
+            try self.readReply();
+        }
+    }
+
+    fn authenticate(self: *ReplClient, config: *const Config) !void {
+        const auth = Packet{
+            .checksum = 0,
+            .packet_length = 0,
+            .packet_id = 0,
+            .timestamp = 0,
+            .op = Operation{ .Authenticate = .{
+                .uid = config.replica.uid,
+                .key = config.replica.key,
+            } },
+        };
+
+        self.auth_bw.reset();
+        const serialized = try auth.serialize(&self.auth_bw);
+        std.mem.writeInt(u32, serialized[8..12], @intCast(serialized.len), .little);
+
+        try self.writeFramed(serialized);
+        self.readReply() catch |err| {
+            log.err("repl: authentication rejected by {s}:{d}", .{ config.replica.address, config.replica.port });
+            return err;
+        };
+    }
+
+    fn writeFramed(self: *ReplClient, payload: []const u8) !void {
+        var len_buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &len_buf, @intCast(payload.len), .little);
+        const w = &self.writer.?;
+        try w.interface.writeAll(&len_buf);
+        try w.interface.writeAll(payload);
+        try w.interface.flush();
+    }
+
+    fn readReply(self: *ReplClient) !void {
+        var resp_len_buf: [4]u8 = undefined;
+        try self.reader.?.interface.readSliceAll(&resp_len_buf);
+        const resp_len = std.mem.readInt(u32, &resp_len_buf, .little);
+        if (resp_len == 0) return error.ReplicationProtocolError;
+
+        const resp = try self.allocator.alloc(u8, resp_len);
+        defer self.allocator.free(resp);
+        try self.reader.?.interface.readSliceAll(resp);
+
+        const reply = try Packet.deserialize(self.allocator, resp);
+        defer Packet.free(self.allocator, reply);
+
+        switch (reply.op) {
+            .Reply => |r| if (r.status != .ok) return error.ReplicationRejected,
+            else => return error.ReplicationProtocolError,
+        }
+    }
+};
+
+const testing = std.testing;
+
+fn testBoundPort(fd: std.posix.fd_t) u16 {
+    var storage: std.posix.sockaddr.storage = undefined;
+    var len: std.posix.socklen_t = @sizeOf(@TypeOf(storage));
+    if (std.posix.system.getsockname(fd, @ptrCast(&storage), &len) != 0) return 0;
+    const sin: *const std.posix.sockaddr.in = @ptrCast(@alignCast(&storage));
+    return std.mem.bigToNative(u16, sin.port);
+}
+
+const MockReplica = struct {
+    listener: *net.Server,
+    io: Io,
+    allocator: Allocator,
+    err: ?anyerror = null,
+
+    fn run(self: *MockReplica) void {
+        var stream = self.listener.accept(self.io) catch |e| {
+            self.err = e;
+            return;
+        };
+        defer stream.close(self.io);
+
+        var rbuf: [8192]u8 = undefined;
+        var wbuf: [8192]u8 = undefined;
+        var reader = net.Stream.Reader.init(stream, self.io, &rbuf);
+        var writer = net.Stream.Writer.init(stream, self.io, &wbuf);
+
+        while (true) {
+            var len_buf: [4]u8 = undefined;
+            reader.interface.readSliceAll(&len_buf) catch break;
+            const frame_len = std.mem.readInt(u32, &len_buf, .little);
+            const payload = self.allocator.alloc(u8, frame_len) catch return;
+            defer self.allocator.free(payload);
+            reader.interface.readSliceAll(payload) catch break;
+
+            var bw = Buffer.init(self.allocator, 1024) catch return;
+            defer bw.deinit();
+            const reply = Packet{
+                .checksum = 0,
+                .packet_length = 0,
+                .packet_id = 0,
+                .timestamp = 0,
+                .op = Operation{ .Reply = .{ .status = .ok, .data = null } },
+            };
+            const bytes = reply.serialize(&bw) catch return;
+            var reply_len: [4]u8 = undefined;
+            std.mem.writeInt(u32, &reply_len, @intCast(bytes.len), .little);
+            writer.interface.writeAll(&reply_len) catch break;
+            writer.interface.writeAll(bytes) catch break;
+            writer.interface.flush() catch break;
+        }
+    }
+};
+
+test "ReplClient ships frames to a replica" {
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    const listen_addr = try net.IpAddress.parseIp4("127.0.0.1", 0);
+    var listener = try net.IpAddress.listen(&listen_addr, io, .{ .reuse_address = true });
+    defer listener.deinit(io);
+
+    const port = testBoundPort(listener.socket.handle);
+    try testing.expect(port != 0);
+
+    var mock = MockReplica{ .listener = &listener, .io = io, .allocator = allocator };
+    const thread = try std.Thread.spawn(.{}, MockReplica.run, .{&mock});
+
+    var config: Config = undefined;
+    config.replica = .{
+        .enabled = true,
+        .sync_interval_ms = 5000,
+        .address = "127.0.0.1",
+        .port = port,
+        .uid = "replica-uid",
+        .key = "replica-key",
+    };
+
+    var client = try ReplClient.init(allocator, io, 262144);
+    defer client.deinit();
+
+    const frame = try allocator.dupe(u8, "hello-replicated-wal-frame");
+    defer allocator.free(frame);
+    var frames = [_][]u8{frame};
+
+    client.connect(&config) catch |e| {
+        thread.join();
+        if (mock.err) |me| return me;
+        return e;
+    };
+    const ship_result = client.ship(&frames);
+    client.disconnect();
+    thread.join();
+
+    if (mock.err) |e| return e;
+    try ship_result;
+}

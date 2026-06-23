@@ -40,6 +40,7 @@ pub fn dispatch(engine: *Engine, allocator: Allocator, io: Io, op: *const Operat
         .Read => |data| blk: {
             const value = try engine.get(data.key);
             defer engine.allocator.free(value);
+            if (value.len < 5) break :blk Operation{ .Reply = .{ .status = .not_found, .data = null } };
             const dst = try allocator.alloc(u8, value.len + 42);
             writeIdIntoBson(data.key, value, dst);
             break :blk Operation{ .Reply = .{ .status = .ok, .data = dst } };
@@ -233,6 +234,7 @@ pub fn dispatch(engine: *Engine, allocator: Allocator, io: Io, op: *const Operat
 fn docsToReply(allocator: Allocator, docs: []const Entry) !Operation {
     var total_len: usize = 0;
     for (docs) |doc| {
+        if (doc.value.len < 5) continue;
         total_len += doc.value.len + 42;
     }
 
@@ -245,6 +247,7 @@ fn docsToReply(allocator: Allocator, docs: []const Entry) !Operation {
 
     var pos: usize = 0;
     for (docs) |doc| {
+        if (doc.value.len < 5) continue;
         const seg = value[pos .. pos + doc.value.len + 42];
         writeIdIntoBson(doc.key, doc.value, seg);
         pos += seg.len;

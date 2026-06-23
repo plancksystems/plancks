@@ -386,6 +386,8 @@ pub const Scheduler = struct {
     fn connectToService(self: *Scheduler, service_name: []const u8) !*PlanckClient {
         const storage = self.storage orelse return error.ServiceNotFound;
 
+        var app_name_owned: ?[]const u8 = null;
+        defer if (app_name_owned) |a| self.allocator.free(a);
         const svc_doc = blk: {
             const app_docs = storage.listApps() catch return error.ServiceNotFound;
             defer storage.freeDocuments(app_docs);
@@ -402,6 +404,9 @@ pub const Scheduler = struct {
                     };
                     const sn = bson_util.getString(self.allocator, sd, "name") orelse continue;
                     if (std.mem.eql(u8, sn, service_name)) {
+                        if (adoc.getString("name") catch null) |an| {
+                            app_name_owned = self.allocator.dupe(u8, an) catch null;
+                        }
                         const dupe = self.allocator.dupe(u8, sd) catch return error.ServiceNotFound;
                         break :blk WbStorage.Document{ .key = 0, .value = dupe };
                     }
@@ -708,4 +713,57 @@ fn extractYamlField(yaml: []const u8, field: []const u8) ?[]const u8 {
         }
     }
     return null;
+}
+
+test "template variables substitute the now timestamp" {
+    const a = std.testing.allocator;
+    const out = try resolveTemplateVars(a, "t=${now}", 90_000_000);
+    defer a.free(out);
+    try std.testing.expectEqualStrings("t=90000000", out);
+}
+
+test "template variables compute the start of today" {
+    const a = std.testing.allocator;
+    const out = try resolveTemplateVars(a, "${today}", 90_000_000);
+    defer a.free(out);
+    try std.testing.expectEqualStrings("86400000", out);
+}
+
+test "template variables leave plain text untouched" {
+    const a = std.testing.allocator;
+    const out = try resolveTemplateVars(a, "no vars here", 0);
+    defer a.free(out);
+    try std.testing.expectEqualStrings("no vars here", out);
+}
+
+test "template variables replace every occurrence" {
+    const a = std.testing.allocator;
+    const out = try resolveTemplateVars(a, "${now}-${now}", 5);
+    defer a.free(out);
+    try std.testing.expectEqualStrings("5-5", out);
+}
+
+test "yaml field extracts a simple value" {
+    try std.testing.expectEqualStrings("hello", extractYamlField("name: hello\n", "name").?);
+}
+
+test "yaml field strips surrounding quotes" {
+    try std.testing.expectEqualStrings("a b", extractYamlField("title: \"a b\"\n", "title").?);
+}
+
+test "yaml field ignores indented keys" {
+    try std.testing.expect(extractYamlField("  name: nested\n", "name") == null);
+}
+
+test "yaml field is null when the key is missing" {
+    try std.testing.expect(extractYamlField("other: 1\n", "name") == null);
+}
+
+test "yaml field is null for an empty value" {
+    try std.testing.expect(extractYamlField("name:\n", "name") == null);
+}
+
+test "health state label is its tag name" {
+    try std.testing.expectEqualStrings("running", HealthState.running.label());
+    try std.testing.expectEqualStrings("crashed", HealthState.crashed.label());
 }
