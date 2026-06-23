@@ -24,7 +24,6 @@ framework, and client libraries for five languages.
   can consume as server-sent events through `ssehub`.
 - The engine, the web control plane, and the CLI all in one tarball.
   `planctl new` scaffolds a working app and deploys it in a few minutes.
-- Client libraries for Go, JavaScript, Python, Rust, and Zig.
 - `schnell-zig`, a companion WASM application framework with routing,
   middleware, sessions, and OAuth/Stripe helpers for the apps you host.
 
