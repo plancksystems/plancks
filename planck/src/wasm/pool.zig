@@ -10,6 +10,7 @@ const Mutex = @import("utils").Mutex;
 const WasmPathMetrics = @import("metrics.zig").WasmPathMetrics;
 const StopWatch = @import("utils").StopWatch;
 const nowMs = @import("../common/common.zig").nowMs;
+const log = std.log.scoped(.wasm);
 
 const WASM_PAGE_BYTES: usize = 64 * 1024;
 const MAX_INSTANCE_MEMORY_BYTES: usize = 256 * 1024 * 1024;
@@ -84,9 +85,7 @@ pub const PooledInstance = struct {
         const memory = instance.getExportMem(module, "memory") orelse
             return error.MemoryExportNotFound;
 
-         
         {
-            const log = std.log.scoped(.wasm);
             const declared_max = memory.getType().limits().max;
             if (declared_max == wasmer.LIMITS_MAX_DEFAULT) {
                 log.warn("WASM guest declares unbounded memory; per-call growth is not hard-capped (only steady-state recycle at {d} bytes). Rebuild the guest with a max_memory of {d} bytes to enforce a per-call cap.", .{ MAX_INSTANCE_MEMORY_BYTES, MAX_INSTANCE_MEMORY_BYTES });
@@ -99,7 +98,6 @@ pub const PooledInstance = struct {
         const initial_pages = memory.pages();
         memory.grow(64) catch {};
         const final_pages = memory.pages();
-        const log = std.log.scoped(.wasm);
         log.info("WASM memory: {d} → {d} pages ({d}KB → {d}KB)", .{
             initial_pages,      final_pages,
             initial_pages * 64, final_pages * 64,
@@ -127,7 +125,6 @@ pub const PooledInstance = struct {
     }
 
     pub fn revive(self: *PooledInstance) bool {
-        const log = std.log.scoped(.wasm);
         const fresh = PooledInstance.init(self.runtime) catch |err| {
             log.err("WASM instance revive failed: {s}", .{@errorName(err)});
             return false;
@@ -152,7 +149,6 @@ pub const PooledInstance = struct {
         sw_mem.stop(io);
         _ = metrics.memcpy_in_ns.fetchAdd(sw_mem.elapsedNs(), .monotonic);
 
-        const log = std.log.scoped(.wasm);
         const mem_before = self.memory.size();
 
         var sw_proc: StopWatch = .{};
@@ -328,7 +324,6 @@ pub const InstancePool = struct {
         const idx = (addr - base) / @sizeOf(PooledInstance);
 
         if (instance.memory.size() > MAX_INSTANCE_MEMORY_BYTES) {
-            const log = std.log.scoped(.wasm);
             log.warn("recycling WASM instance over memory cap: {d} bytes", .{instance.memory.size()});
             instance.deinit();
             self.dormant[idx] = true;
@@ -348,7 +343,6 @@ pub const InstancePool = struct {
     }
 
     fn reaperLoop(self: *InstancePool) Io.Cancelable!void {
-        const log = std.log.scoped(.wasm);
         while (true) {
             self.io.sleep(Io.Duration.fromMilliseconds(REAPER_INTERVAL_MS), .awake) catch |err| {
                 if (err == error.Canceled) return error.Canceled;

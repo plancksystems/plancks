@@ -4,6 +4,7 @@ const Io = std.Io;
 const WasmRuntime = @import("../wasm/runtime.zig").WasmRuntime;
 const HttpMethodTag = @import("../common/metrics.zig").HttpMethodTag;
 const StopWatch = @import("utils").StopWatch;
+const log = std.log.scoped(.wasm);
 
 pub fn handleRaw(allocator: Allocator, raw_request: []const u8, ctx: ?*anyopaque) ![]const u8 {
     const wasm_runtime: *WasmRuntime = @ptrCast(@alignCast(ctx orelse return error.MissingWasmContext));
@@ -27,7 +28,6 @@ pub fn handleRaw(allocator: Allocator, raw_request: []const u8, ctx: ?*anyopaque
     }
 
     return wasm_runtime.handleRequestRaw(allocator, raw_request) catch |err| {
-        const log = std.log.scoped(.wasm);
         log.err("WASM raw handler error: {s}", .{@errorName(err)});
         return err;
     };

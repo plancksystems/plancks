@@ -16,6 +16,8 @@ const UpstreamPool = upstream_pool_mod.UpstreamPool;
 const runtime_mod = @import("runtime.zig");
 const WasmRuntime = runtime_mod.WasmRuntime;
 const WasmPathMetrics = @import("metrics.zig").WasmPathMetrics;
+const log = std.log.scoped(.wasm);
+
 
 pub const HostContext = struct {
     engine: *Engine,
@@ -69,7 +71,6 @@ fn memSlice(mem: *wasmer.Memory, ptr: usize, len: usize) ?[]u8 {
 }
 
 fn hostRequestCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*wasm.ValVec) callconv(c_callconv) ?*wasm.Trap {
-    const log = std.log.scoped(.wasm);
     const ctx = ctxFromEnv(env) orelse return null;
     const mem = ctx.memory orelse return null;
 
@@ -191,7 +192,6 @@ fn hostLogCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*wasm.
     const len: usize = @intCast(@as(u32, @bitCast(a.data[2].of.i32)));
 
     const msg = memSlice(mem, ptr, len) orelse return null;
-    const log = std.log.scoped(.wasm);
     switch (level) {
         0 => log.debug("{s}", .{msg}),
         1 => log.info("{s}", .{msg}),
@@ -221,7 +221,6 @@ fn hostNowUnixSCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*
 
 fn hostRandomBytesCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*wasm.ValVec) callconv(c_callconv) ?*wasm.Trap {
     _ = results;
-    const log = std.log.scoped(.wasm);
     const ctx = ctxFromEnv(env) orelse return null;
     const mem = ctx.memory orelse return null;
 
@@ -317,7 +316,6 @@ pub fn createHostRespondFunc(store: *wasmer.Store, ctx: *HostContext) !*wasmer.F
 }
 
 fn hostCallServiceCallback(env: ?*anyopaque, args: ?*const wasm.ValVec, results: ?*wasm.ValVec) callconv(c_callconv) ?*wasm.Trap {
-    const log = std.log.scoped(.wasm);
     const ctx = ctxFromEnv(env) orelse return null;
     const mem = ctx.memory orelse return null;
 
