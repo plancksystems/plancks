@@ -24,12 +24,8 @@
             .hash = "utils-0.1.0-Ldej_vd3AgAgDICgiPBTxMHbojO6dD7qjM0lf4S19CaZ",
         },
         .schnell = .{
-            .url = "https://github.com/plancksystems/schnell-zig/archive/refs/tags/v0.2.0.tar.gz",
-            .hash = "schnell-0.1.0-mz-7QLDJBQDZt7ojEfwgTZP0SZbMN08-k5071efnkYzH",
-        },
-        .ssehub = .{
-            .url = "https://github.com/plancksystems/ssehub/archive/refs/tags/v0.1.0.tar.gz",
-            .hash = "ssehub-0.1.0-crT0nx7WAABqAeUB8JgzfukHh8pBq4dKn8YUDVXe0vI7",
+            .url = "https://github.com/plancksystems/schnell-zig/archive/refs/tags/v0.3.0.tar.gz",
+            .hash = "schnell-0.1.0-mz-7QKfFBQCBb_1q8NGDqh_UFxtDY35UAL2TKu0upXKL",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src" },

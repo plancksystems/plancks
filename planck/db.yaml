@@ -52,3 +52,53 @@ change_streams:
   stores:
     - ns: orders
       operations: [insert, update, delete]
+
+service:
+  
+  name: pizzaqsr-hda-mono
+  description: "Pizzaqsr — HDA monolith sample (Datastar   planck/db WASM)"
+  
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+  
+  http:
+    host: "127.0.0.1"
+    port: 3010
+    max_connections: 10000
+    max_header_size: 8192
+    max_body_size: 1048576
+    response_buffer_size: 65536
+    idle_timeout_ms: 30000
+    max_requests_per_connection: 10000
+    drain_timeout_ms: 5000
+    static_dir: "../../public"
+  
+  wasm:
+    enabled: false
+    min_instances: 2
+    max_instances: 8
+    autoscale: false
+  
+  upstreams:
+    - name: google_oauth
+      url: "https://oauth2.googleapis.com"
+      timeout_ms: 10000
+      max_in_flight: 8
+      breaker:
+        failure_threshold: 3
+        success_threshold: 1
+        open_duration_ms: 30000
+    - name: google_userinfo
+      url: "https://www.googleapis.com"
+      timeout_ms: 10000
+      max_in_flight: 8
+      breaker:
+        failure_threshold: 3
+        success_threshold: 1
+        open_duration_ms: 30000
+    - name: stripe_api
+      url: "https://api.stripe.com"
+      timeout_ms: 15000
+      max_in_flight: 8

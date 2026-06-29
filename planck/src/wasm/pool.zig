@@ -110,7 +110,24 @@ pub const PooledInstance = struct {
 
         if (instance.getExportFunc(module, "init")) |init_fn| {
             defer init_fn.deinit();
-            _ = init_fn.call(i32, .{}) catch return error.WasmInitFailed;
+            var req_offset: usize = 0;
+            if (runtime.providers_yaml.len > 0) {
+                req_offset = 65536;
+                if (req_offset + runtime.providers_yaml.len > memory.size()) {
+                    const needed = (req_offset + runtime.providers_yaml.len) - memory.size();
+                    const pages = (needed + 65535) / 65536;
+                    _ = memory.grow(@as(u32, @intCast(pages))) catch {};
+                }
+                const mem_data = memory.data();
+                @memcpy(mem_data[req_offset .. req_offset + runtime.providers_yaml.len], runtime.providers_yaml);
+            }
+            _ = init_fn.call(i32, .{
+                @as(i32, @intCast(req_offset)),
+                @as(i32, @intCast(runtime.providers_yaml.len)),
+            }) catch |err| {
+                log.err("WASM init call failed: {s}", .{@errorName(err)});
+                return error.WasmInitFailed;
+            };
         }
 
         return PooledInstance{

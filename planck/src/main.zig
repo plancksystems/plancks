@@ -102,6 +102,15 @@ fn startHttpServer(server: *schnell.Server, thr_io: Io) Io.Cancelable!void {
     };
 }
 
+fn loadProviders(allocator: std.mem.Allocator, io: std.Io, dir: Io.Dir) ![]u8 {
+    const content = Io.Dir.readFileAlloc(dir, io, "providers.yaml", allocator, .unlimited) catch |err| switch (err) {
+        error.FileNotFound => return &.{},
+        else => return err,
+    };
+    errdefer allocator.free(content);
+    return content;
+}
+
 pub fn main(_: std.process.Init.Minimal) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     const allocator = if (builtin.mode == .Debug) gpa.allocator() else std.heap.c_allocator;
@@ -188,8 +197,13 @@ pub fn main(_: std.process.Init.Minimal) !void {
     };
     defer engine.deinit();
 
+    const providers_yaml = loadProviders(allocator, io, config_dir) catch |err| {
+        log.err("Failed to load providers.yaml: {}", .{err});
+        return err;
+    };
+
     const wasm_runtime: ?*WasmRuntime = if (service.wasm.enabled) blk: {
-        break :blk WasmRuntime.init(allocator, config, service, engine, io) catch |err| {
+        break :blk WasmRuntime.init(allocator, config, service, engine, io, providers_yaml) catch |err| {
             log.warn("WASM runtime not ready: {} - DB will start without WASM", .{err});
             break :blk null;
         };

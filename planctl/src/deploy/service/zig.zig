@@ -10,7 +10,6 @@ const yaml_util = @import("../yaml_util.zig");
 const log = std.log.scoped(.deploy_service_zig);
 
 pub fn run(allocator: std.mem.Allocator, io: Io, service_name: []const u8, profile: Profile) !void {
-
     for (profile.nodes) |node| {
         var client = DeployClient.init(allocator, io, node.server);
 
@@ -65,6 +64,14 @@ pub fn run(allocator: std.mem.Allocator, io: Io, service_name: []const u8, profi
         };
         defer allocator.free(service_yaml);
 
+        const prov_path = try std.fmt.allocPrint(allocator, "{s}/providers.yaml", .{svc_dir});
+        defer allocator.free(prov_path);
+        const providers_yaml = Io.Dir.readFileAlloc(.cwd(), io, prov_path, allocator, .unlimited) catch {
+            std.debug.print("Error: {s} not found\n", .{prov_path});
+            return error.NoConfig;
+        };
+        defer allocator.free(providers_yaml);
+
         const display_name = try yaml_util.readServiceName(allocator, db_yaml, service_name);
         defer allocator.free(display_name);
 
@@ -75,7 +82,7 @@ pub fn run(allocator: std.mem.Allocator, io: Io, service_name: []const u8, profi
         defer allocator.free(service_yaml_rewritten);
 
         std.debug.print("  Deploying service '{s}' under app '{s}' (display name: '{s}')...\n", .{ wasm_svc_name, app_name, display_name });
-        const deploy_result = try client.deployService(app_name, wasm_svc_name, display_name, db_yaml, service_yaml_rewritten, node.uid, node.key);
+        const deploy_result = try client.deployService(app_name, wasm_svc_name, display_name, db_yaml, service_yaml_rewritten, providers_yaml, node.uid, node.key);
         defer allocator.free(deploy_result);
 
         const already_exists = std.mem.indexOf(u8, deploy_result, "already exists") != null;
@@ -90,13 +97,6 @@ pub fn run(allocator: std.mem.Allocator, io: Io, service_name: []const u8, profi
         std.debug.print("  Uploading WASM ({d} KB)...\n", .{wasm_data.len / 1024});
         try client.deployWasm(wasm_svc_name, app_name, wasm_data);
 
-        if (Io.Dir.readFileAlloc(.cwd(), io, "Caddyfile", allocator, .unlimited)) |caddy| {
-            defer allocator.free(caddy);
-            std.debug.print("  Refreshing Caddyfile ({d} bytes)...\n", .{caddy.len});
-            client.deployConfig(app_name, "Caddyfile", caddy) catch |err| {
-                std.debug.print("  Warning: Caddyfile refresh failed: {}\n", .{err});
-            };
-        } else |_| {}
 
         std.debug.print("Done! Service '{s}' deployed with WASM to {s}\n", .{ service_name, node.server });
     }

@@ -59,12 +59,20 @@ fn wireDeps(b: *std.Build, target: anytype, optimize: anytype) Deps {
     planck_zig_client.addImport("proto", proto);
 
     const schnell_dep = b.dependency("schnell", .{});
+     const yaml_dep = schnell_dep.builder.dependency("yaml", .{});
+    const yaml = b.createModule(.{
+        .root_source_file = yaml_dep.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const schnell = b.createModule(.{ .root_source_file = schnell_dep.path("src/root.zig"), .target = target, .optimize = optimize });
     schnell.addImport("bson", bson);
     schnell.addImport("utils", utils);
     schnell.addImport("tls", tls);
     schnell.addImport("proto", proto);
     schnell.addImport("planck_zig_client", planck_zig_client);
+    schnell.addImport("yaml", yaml);
 
     const web = b.createModule(.{ .root_source_file = schnell_dep.path("src/web/root.zig"), .target = target, .optimize = optimize });
     web.addImport("bson", bson);

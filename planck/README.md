@@ -139,12 +139,13 @@ specify.
 
 ## Configuration
 
-Two files, both YAML:
+Three files, all YAML:
 
 - `db.yaml`: storage tuning, TCP wire, durability, replication,
   change streams. Read by the DB itself.
 - `service.yaml`: identity, the HTTP front-end (`http` + `tls`), WASM
   hosting, outbound upstream allowlist. Read by the WASM runtime.
+- `providers.yaml`: third-party credentials (like Google OAuth and Stripe) used by built-in application submodules.
 
 TLS lives in `service.yaml` (the HTTP edge), not `db.yaml` — the wire
 protocol is plaintext (see TLS section).
@@ -270,6 +271,82 @@ upstreams: # explicit outbound allowlist
 Outbound calls from WASM code go through `host_call_service`, which
 checks the upstream name against this allowlist. There is no general
 "reach any URL" path.
+
+### providers.yaml
+
+This file contains credentials and settings for third-party providers (like Stripe, Google OAuth, Razorpay, SMTP, and Twilio) that are imported and used by application submodules. Every block in this file is completely optional; you only populate the submodules your application requires. 
+
+When deploying a service, `planctl` uploads this configuration alongside `service.yaml`. The Planck host then passes the contents of `providers.yaml` directly into the WASM module during initialization.
+
+```yaml
+# Google OAuth Configuration
+google_oauth:
+  client_id: "..."
+  client_secret: "..."
+  redirect_uri: "http://127.0.0.1:3010/auth/callback"
+  scopes: "openid email profile"
+
+# Azure OAuth Configuration
+azure_oauth:
+  tenant_id: "..."
+  client_id: "..."
+  client_secret: "..."
+  redirect_uri: "http://127.0.0.1:3010/auth/callback"
+  scopes: "openid profile email"
+
+# Firebase Auth Configuration
+firebase:
+  api_key: "..."
+  project_id: "..."
+
+# Cookie-based Session Authentication (for external session stores)
+cookie:
+  cookie_name: "my_session"
+  session_lookup_url: "http://auth-service/session"
+  field_mappings:
+    - json_field: "user_id"
+      local_key: "user_id"
+  skip_paths: []
+  cache_ttl_ms: 60000
+  cache_max_entries: 4096
+
+# Stripe Payments Configuration
+stripe:
+  secret_key: "sk_test_..."
+  publishable_key: "pk_test_..."
+  webhook_secret: "whsec_..."
+
+# Razorpay Payments Configuration
+razorpay:
+  key_id: "..."
+  key_secret: "..."
+  webhook_secret: "..."
+
+# SendGrid Email Notifications
+sendgrid:
+  api_key: "..."
+  default_from: "noreply@example.com"
+
+# Firebase Cloud Messaging (FCM) Push Notifications
+fcm:
+  project_id: "..."
+  access_token: "..."
+
+# SMTP Email Notifications
+smtp:
+  host: "smtp.example.com"
+  port: 587
+  username: "..."
+  password: "..."
+  default_from: "noreply@example.com"
+  direct_tls: false
+
+# Twilio SMS Notifications
+twilio:
+  account_sid: "..."
+  auth_token: "..."
+  from_number: "+1234567890"
+```
 
 ## Wire protocol
 

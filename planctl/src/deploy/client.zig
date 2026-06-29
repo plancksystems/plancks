@@ -122,7 +122,7 @@ pub const DeployClient = struct {
         }
     }
 
-    pub fn deployService(self: *DeployClient, app_name: []const u8, name: []const u8, service_name: []const u8, db_yaml: []const u8, service_yaml: []const u8, admin_uid: []const u8, admin_key: []const u8) ![]const u8 {
+    pub fn deployService(self: *DeployClient, app_name: []const u8, name: []const u8, service_name: []const u8, db_yaml: []const u8, service_yaml: []const u8, providers_yaml: []const u8, admin_uid: []const u8, admin_key: []const u8) ![]const u8 {
         var body_buf: std.ArrayList(u8) = .empty;
         defer body_buf.deinit(self.allocator);
 
@@ -140,6 +140,8 @@ pub const DeployClient = struct {
         try urlEncodeYaml(&body_buf, self.allocator, db_yaml);
         try body_buf.appendSlice(self.allocator, "&service_yaml=");
         try urlEncodeYaml(&body_buf, self.allocator, service_yaml);
+        try body_buf.appendSlice(self.allocator, "&providers_yaml=");
+        try urlEncodeYaml(&body_buf, self.allocator, providers_yaml);
 
         return try self.post("/api/deploy", body_buf.items, "application/x-www-form-urlencoded");
     }
@@ -276,7 +278,6 @@ pub const DeployClient = struct {
         return try self.get("/api/databases");
     }
 
-
     pub fn get(self: *DeployClient, path: []const u8) ![]const u8 {
         if (self.dry_run) {
             std.debug.print("  [dry-run] GET {s}{s}\n", .{ self.server_url, path });
@@ -340,7 +341,6 @@ pub const DeployClient = struct {
 
         return try aw.toOwnedSlice();
     }
-
 
     fn appendMultipartField(body_buf: *std.ArrayList(u8), allocator: std.mem.Allocator, boundary: []const u8, name: []const u8, value: []const u8) !void {
         try body_buf.appendSlice(allocator, "--");

@@ -4,6 +4,7 @@ pub const DeployRequest = struct {
     name: []const u8 = "",
     config_yaml: []const u8 = "",
     service_yaml: []const u8 = "",
+    providers_yaml: []const u8 = "",
     admin_uid: []const u8 = "admin",
     admin_key: []const u8 = "",
     description: []const u8 = "",

@@ -433,7 +433,7 @@ pub fn create(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !void 
             \\var update: UpdateItemHandler = undefined;
             \\var del: DeleteItemHandler = undefined;
             \\
-            \\export fn init() i32 {
+            \\export fn init(config_ptr: ?[*]const u8, config_len: u32) i32 {
             \\    const allocator = std.heap.wasm_allocator;
             \\
             \\    client = planck.Client.init(allocator, 8 * 1024) catch return -1;
@@ -444,7 +444,8 @@ pub fn create(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !void 
             \\    update = .{};
             \\    del = .{};
             \\
-            \\    app = web.WasmApp.init(allocator, .{}) catch return -1;
+            \\    const yaml_text = if (config_ptr) |ptr| ptr[0..config_len] else &.{};
+            \\    app = web.WasmApp.init(allocator, .{}, yaml_text) catch return -1;
             \\
             \\    app.route(FindAllItemsHandler, ItemParams, null, .get, "/items", &find_all, null) catch return -1;
             \\    app.route(FindItemByIdHandler, ItemParams, null, .get, "/items/:id", &find_by_id, null) catch return -1;

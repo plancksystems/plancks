@@ -12,12 +12,13 @@ var app: web.WasmApp = undefined;
 var client: planck.Client = undefined;
 var ctx: Ctx = undefined;
 
-export fn init() i32 {
+export fn init(config_ptr: ?[*]const u8, config_len: u32) i32 {
     const allocator = std.heap.wasm_allocator;
     client = planck.Client.init(allocator, 64 * 1024) catch return -1;
     ctx = .{ .client = &client };
 
-    app = web.WasmApp.init(allocator, .{}) catch return -1;
+    const yaml_text = if (config_ptr) |ptr| ptr[0..config_len] else &.{};
+    app = web.WasmApp.init(allocator, .{}, yaml_text) catch return -1;
     routes.register(&app, &ctx) catch return -1;
 
     app.onResponse(struct {

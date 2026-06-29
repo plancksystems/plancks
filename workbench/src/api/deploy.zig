@@ -63,7 +63,7 @@ fn deploy(services: *AppServices, allocator: std.mem.Allocator, body: *const Dep
 
     const parsed = parseDeployPorts(allocator, body.config_yaml, body.service_yaml);
 
-    svc_mgr.deploy(body.app, body.name, body.config_yaml, body.service_yaml) catch |err| {
+    svc_mgr.deploy(body.app, body.name, body.config_yaml, body.service_yaml, body.providers_yaml) catch |err| {
         return std.json.Stringify.valueAlloc(allocator, DeployResponse{ .success = false, .@"error" = @errorName(err) }, .{ .emit_null_optional_fields = false });
     };
 

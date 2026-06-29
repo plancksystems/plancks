@@ -1,0 +1,9 @@
+google_oauth:
+  client_id: ""
+  client_secret: ""
+  redirect_uri: ""
+  scopes: ""
+stripe:
+  secret_key: ""
+  publishable_key: ""
+  webhook_secret: ""

@@ -185,7 +185,7 @@ pub const ServiceManager = struct {
     }
 
 
-    pub fn deploy(self: *ServiceManager, app: []const u8, name: []const u8, db_yaml: []const u8, service_yaml: []const u8) !void {
+    pub fn deploy(self: *ServiceManager, app: []const u8, name: []const u8, db_yaml: []const u8, service_yaml: []const u8, providers_yaml: []const u8) !void {
         const svc_dir = try self.serviceDir(app, name);
         defer self.allocator.free(svc_dir);
 
@@ -214,6 +214,10 @@ pub const ServiceManager = struct {
         const svc_yaml_path = try std.fmt.allocPrint(self.allocator, "{s}/service.yaml", .{svc_dir});
         defer self.allocator.free(svc_yaml_path);
         try Dir.writeFile(.cwd(), self.io, .{ .sub_path = svc_yaml_path, .data = service_yaml });
+
+        const providers_yaml_path = try std.fmt.allocPrint(self.allocator, "{s}/providers.yaml", .{svc_dir});
+        defer self.allocator.free(providers_yaml_path);
+        try Dir.writeFile(.cwd(), self.io, .{ .sub_path = providers_yaml_path, .data = providers_yaml });
 
         const binary_name = try self.binaryName(app, name);
         defer self.allocator.free(binary_name);

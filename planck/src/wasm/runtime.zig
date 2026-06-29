@@ -14,7 +14,6 @@ const UpstreamPool = upstream_pool_mod.UpstreamPool;
 const WasmPathMetrics = @import("metrics.zig").WasmPathMetrics;
 const StopWatch = @import("utils").StopWatch;
 
-
 pub const WASM_FUEL_PER_CALL: u64 = 2_000_000_000;
 
 fn meteringCost(operator: c_int) callconv(std.builtin.CallingConvention.c) u64 {
@@ -32,8 +31,9 @@ pub const WasmRuntime = struct {
     io: Io,
     upstreams: ?*UpstreamPool = null,
     metrics: WasmPathMetrics = .{},
+    providers_yaml: []const u8,
 
-    pub fn init(allocator: Allocator, config: *const Config, service: *const Service, db_engine: *Engine, io: Io) !*WasmRuntime {
+    pub fn init(allocator: Allocator, config: *const Config, service: *const Service, db_engine: *Engine, io: Io, providers_yaml: []const u8) !*WasmRuntime {
         if (service.name.len == 0) return error.WasmNameNotConfigured;
         const base_name = if (std.mem.indexOf(u8, service.name, ".db.")) |idx| service.name[0..idx] else service.name;
 
@@ -69,6 +69,7 @@ pub const WasmRuntime = struct {
             .pool = undefined,
             .db_engine = db_engine,
             .io = io,
+            .providers_yaml = try allocator.dupe(u8, providers_yaml),
         };
 
         if (service.upstreams.len > 0) {
@@ -117,6 +118,7 @@ pub const WasmRuntime = struct {
         self.module.deinit();
         self.store.deinit();
         self.wasm_engine.deinit();
+        self.allocator.free(self.providers_yaml);
         self.allocator.destroy(self);
     }
 };

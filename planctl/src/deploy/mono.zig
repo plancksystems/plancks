@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const Io = std.Io;
 const DeployClient = @import("client.zig").DeployClient;
@@ -62,6 +61,12 @@ pub fn run(allocator: std.mem.Allocator, io: Io, profile: Profile) !void {
         };
         defer allocator.free(service_yaml_raw);
 
+        const providers_yaml_raw = Io.Dir.readFileAlloc(.cwd(), io, "app/providers.yaml", allocator, .unlimited) catch {
+            std.debug.print("Error: app/providers.yaml not found\n", .{});
+            return error.NoConfig;
+        };
+        defer allocator.free(providers_yaml_raw);
+
         const service_name = try yaml_util.readServiceName(allocator, db_yaml, "db");
         defer allocator.free(service_name);
 
@@ -72,7 +77,7 @@ pub fn run(allocator: std.mem.Allocator, io: Io, profile: Profile) !void {
         defer allocator.free(service_yaml);
 
         std.debug.print("  Deploying service '{s}' under app '{s}' (display name: '{s}')...\n", .{ wasm_svc_name, name, service_name });
-        const deploy_result = client.deployService(name, wasm_svc_name, service_name, db_yaml, service_yaml, node.uid, node.key) catch |err| {
+        const deploy_result = client.deployService(name, wasm_svc_name, service_name, db_yaml, service_yaml, providers_yaml_raw, node.uid, node.key) catch |err| {
             std.debug.print("Error: deployService failed: {}\n", .{err});
             return err;
         };
@@ -243,4 +248,3 @@ fn uploadPublic(allocator: std.mem.Allocator, io: Io, client: *DeployClient, nam
     }
     return file_count;
 }
-
