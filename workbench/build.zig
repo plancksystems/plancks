@@ -127,6 +127,7 @@ fn wireDeps(b: *std.Build, target: anytype, optimize: anytype) Deps {
     schnell.addImport("tls", tls);
     schnell.addImport("proto", proto);
     schnell.addImport("planck_zig_client", planck);
+    schnell.addImport("yaml", yaml);
 
     return .{
         .bson = bson,
