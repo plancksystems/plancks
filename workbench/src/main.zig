@@ -132,7 +132,7 @@ pub fn main(init: std.process.Init) !void {
     var app = try schnell.App.init(allocator, .{
         .port = wb_config.listen_port,
         .max_body_size = 100 * 1024 * 1024,
-    });
+    }, &.{});
     defer app.deinit();
 
     var cors_mw = CorsMiddleware.init(.{});
