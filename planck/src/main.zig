@@ -121,9 +121,7 @@ pub fn main(_: std.process.Init.Minimal) !void {
         }
     };
 
-    var threaded: std.Io.Threaded = .init(allocator, .{
-        .async_limit = .unlimited,
-    });
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     log_io = io;

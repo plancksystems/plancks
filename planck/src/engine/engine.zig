@@ -4,6 +4,7 @@ const Dir = Io.Dir;
 const Allocator = std.mem.Allocator;
 const Mutex = @import("utils").Mutex;
 const RwLock = @import("utils").RwLock;
+
 const Result = @import("../common/common.zig").Result;
 const Db = @import("../storage/db.zig").Db;
 const Config = @import("../common/config.zig").Config;
@@ -825,8 +826,7 @@ pub const Engine = struct {
 
                 if (self.read_cache) |cache| cache.remove(doc_id);
             },
-            3 => {
-            },
+            3 => {},
             4 => {
                 self.catalog_mutex.lock(self.io);
                 defer self.catalog_mutex.unlock(self.io);
@@ -860,8 +860,7 @@ pub const Engine = struct {
                 self.db_mutex.unlock(self.io);
                 self.catalog_mutex.unlock(self.io);
             },
-            6 => {
-            },
+            6 => {},
             7 => {
                 self.catalog_mutex.lock(self.io);
                 self.db_mutex.lock(self.io);
@@ -1250,7 +1249,6 @@ pub const Engine = struct {
 
         return results.toOwnedSlice(self.allocator);
     }
-
 
     pub fn queryDocs(self: *Engine, store_ns: []const u8, query_json: []const u8) ![]Entry {
         return query_executor.queryDocs(self, store_ns, query_json);
