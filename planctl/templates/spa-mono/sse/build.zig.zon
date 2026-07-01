@@ -26,7 +26,7 @@
         },
         .schnell = .{
             .url = "https://github.com/plancksystems/schnell-zig/archive/refs/tags/v0.3.0.tar.gz",
-            .hash = "schnell-0.1.0-mz-7QPi9BQDC6vkDhh9HUlXBKnhG-hSkt3UBEAX4rqFZ",
+            .hash = "schnell-0.1.0-mz-7QJK-BQAcN7-eP4ys5qt_7c7_ftOoyU18GPAXWOtH",
         },
         .ssehub = .{
             .url = "https://github.com/plancksystems/ssehub/archive/refs/tags/v0.1.0.tar.gz",
